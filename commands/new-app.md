@@ -29,13 +29,19 @@ Steps:
    ```
 
 3. **Copy the chosen template** into `./$1/` (including dotfiles `.github/`,
-   `.nuklaut/`), then replace placeholders:
+   `.nuklaut/`, `.dockerignore`, `.gitignore`):
    ```bash
-   cd $1 && grep -rl '__REPO_NAME__' . | xargs perl -pi -e "s/__REPO_NAME__/$1/g"
+   TEMPLATE="${CLAUDE_PLUGIN_ROOT}/template/python-backend"  # or node/
+   cp -r "${TEMPLATE}/." "$1/"                               # includes dotfiles
+   cd "$1"
+   ```
+   Replace placeholders:
+   ```bash
+   grep -rl '__REPO_NAME__' . | xargs perl -pi -e "s/__REPO_NAME__/$1/g"
    ```
    For the **python** stack, also rename the package dir and replace `__REPO_PKG__`:
    ```bash
-   git mv src/__REPO_PKG__ src/PKG       # use the derived PKG name
+   mv src/__REPO_PKG__ src/PKG           # use the derived PKG name
    grep -rl '__REPO_PKG__' . | xargs perl -pi -e "s/__REPO_PKG__/PKG/g"
    rm -f PYPROJECT.md                    # the generation note; not part of the app
    ```
