@@ -20,8 +20,8 @@
         "repo": "astrojones/repo-agent-harness"
       },
       "category": "developer-tools",
-      "keywords": ["mcp", "agent", "harness", "serena", "code-navigation", "safety", "verification"],
-      "description": "Repo-aware coding-agent harness: deterministic MCP repo tools, Serena semantic navigation, safe-shell policies, coding-workflow skills, and verification hooks."
+      "keywords": ["mcp", "agent", "harness", "serena", "code-navigation", "repo-health", "safety", "verification"],
+      "description": "Repo-aware coding-agent harness, one MCP server for everything: deterministic repo tools, built-in Serena semantic navigation (proxied serena_* tools), configurable repo health, safe-shell policies, coding-workflow skills, and verification hooks."
     }
   ]
 }
