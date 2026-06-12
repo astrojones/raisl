@@ -8,9 +8,12 @@ learning the controller internals or touching SSH.
 ## Install
 
 ```bash
-/plugin marketplace add astrojones/astrojones-dev
+/plugin marketplace add astrojones/claude-plugins
 /plugin install astrojones-dev@astrojones
 ```
+
+(The org plugin index lives in [`astrojones/claude-plugins`](https://github.com/astrojones/claude-plugins);
+this repo is just the plugin.)
 
 (Requires org membership — the repo is public, but `gh repo create` inside the org
 needs you to have accepted your org invite.)
@@ -29,7 +32,8 @@ needs you to have accepted your org invite.)
 
 Every scaffolded repo also carries the **[repo-agent-harness](https://github.com/astrojones/repo-agent-harness)**
 (installed at scaffold time via `uvx … repo-agent-harness init`, sha-pinned): `AGENTS.md`
-(org charter + harness rules), `.mcp.json` (Serena + 10 deterministic `repo_*` tools),
+(org charter + harness rules), `.mcp.json` (one harness server: deterministic `repo_*`
+tools + proxied `serena_*` navigation),
 `agent/policies/` (safe-shell bounds), and `agent/tools/` (the same operations as CLIs).
 A contributor can clone an app and point **any** MCP-capable assistant at it — vanilla
 Claude Code, Codex, Cursor — with zero plugin installs: the repo itself provides repo
