@@ -30,6 +30,7 @@ needs you to have accepted your org invite.)
 | `bugfix`, `feature`, `refactor`, `test`, `implement`, `commit-semantic` | Skills | The [repo-agent-harness](https://github.com/astrojones/repo-agent-harness) coding workflows (the harness repo itself is plugin-free; its Claude Code surface lives here). |
 | `implementer`, `reviewer`, `test-runner` | Agents | The harness workflow subagents (TDD streams, diff review, narrow verification). |
 | `explorer` | Agent | Read-only Serena-first symbol navigation and deep exploration of a code region — two modes (scout breadth / explore depth), hard read budget, cited summaries, no full-file dumps. Hands edits to `implementer`. |
+| `fullstack-architect` | Agent | Designs and builds UI⇄backend vertical slices as one typed contract — elegant, lean, witty interfaces wired to real FastAPI/pydantic APIs, incl. tectonic/synctex document generation. Opinionated to the org stack (FastAPI + Svelte/SvelteKit + Tailwind/shadcn). |
 | `hooks/` | Hooks | Safe-shell + secret-read guard piped through the *repo's own* sha-pinned harness (`repo-agent-harness hook pre-tool-use`, fail-open shim) + post-edit verification nudge. |
 | `/harness-init` | Command | Scaffolds the harness (agent/, AGENTS.md, sha-pinned `.mcp.json`) into any existing repo — the generic version of what `/new-app` does automatically. |
 
