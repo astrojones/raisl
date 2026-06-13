@@ -13,11 +13,18 @@ const SKILLS_OUT = join(OPENCODE_DIR, "skills")
 
 const CLAUDE_ONLY_COMMANDS = new Set(["new-app.md", "harness-app.md"])
 const CLAUDE_ONLY_AGENTS = new Set(["deploy-doctor.md"])
+// Symmetry invariant: commands/agents above exclude org-only entries, but
+// `prompts/` currently holds only assistant-agnostic workflow prompts, so this
+// set is empty. Any future org-only prompt MUST be listed here (by `<name>.md`)
+// so it cannot leak into the opencode skills tree via materializeSkills.
+const CLAUDE_ONLY_SKILLS = new Set<string>([])
 
-const DESTRUCTIVE_FALLBACK = [
+export const DESTRUCTIVE_FALLBACK = [
   /\bgit\s+push\s+(?:[^|;]*\s)?(-f|--force)\b/,
-  /\brm\s+(?:[^|;]*\s)?-[a-z]*r[a-z]*f/,
-  /\brm\s+(?:[^|;]*\s)?-[a-z]*f[a-z]*r/,
+  // rm with BOTH a recursive- and a force-indicator anywhere before the next
+  // command separator: catches combined (-rf), separated (-r -f) and long
+  // (--recursive --force) flags, while a plain `rm file.txt` (no flags) misses.
+  /\brm\b(?=[^|;]*\s-(?:-recursive\b|[a-z]*r))(?=[^|;]*\s-(?:-force\b|[a-z]*f))/,
   /\bgh\s+repo\s+delete\b/,
   /\bchmod\s+-R\s+777\b/,
   /\bdocker\b[^|;]*\bdown\b[^|;]*\s-v\b/,
@@ -115,6 +122,7 @@ async function materializeSkills(): Promise<void> {
   const entries = await readdir(PROMPTS_DIR)
   for (const file of entries) {
     if (!file.endsWith(".md") || file.startsWith("_")) continue
+    if (CLAUDE_ONLY_SKILLS.has(file)) continue
     const name = file.slice(0, -3)
     const body = await readFile(join(PROMPTS_DIR, file), "utf8")
     const description = firstLine(body).replace(/^#+\s*/, "").trim() || name
@@ -123,7 +131,9 @@ async function materializeSkills(): Promise<void> {
     const frontmatter = [
       "---",
       `name: ${name}`,
-      `description: ${description}`,
+      // JSON.stringify yields a valid YAML double-quoted scalar, escaping
+      // colons, quotes and leading block indicators in the prompt's first line.
+      `description: ${JSON.stringify(description)}`,
       "compatibility: opencode",
       "metadata:",
       "  source: repo-agent-harness:prompts",
@@ -134,7 +144,7 @@ async function materializeSkills(): Promise<void> {
   }
 }
 
-function firstLine(s: string): string {
+export function firstLine(s: string): string {
   const i = s.indexOf("\n")
   return i === -1 ? s : s.slice(0, i)
 }
@@ -165,17 +175,37 @@ async function materializeAgents(target: string): Promise<void> {
   }
 }
 
-function claudeToOpencode(body: string): string {
+export function claudeToOpencode(body: string): string {
   const m = body.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
   if (!m) return body
   const yaml = m[1] ?? ""
   const rest = m[2] ?? ""
   const kept: string[] = []
-  for (const line of yaml.split("\n")) {
-    if (/^(color|allowed-tools|argument-hint):/.test(line)) continue
+  const lines = yaml.split("\n")
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ""
+    if (/^(color|allowed-tools|argument-hint):/.test(line)) {
+      // Drop the key line and any following more-indented continuation lines
+      // (block scalar/sequence values) so block-style keys don't orphan.
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1] ?? "")) i++
+      continue
+    }
     kept.push(line)
   }
   return `---\n${kept.join("\n")}\n---\n${rest}`
+}
+
+// Sentinels the harness writes into a bootstrapped opencode.json; the plugin
+// rewrites them to the absolute, materialized skills directory on load.
+export const SKILLS_PATH_SENTINELS = [
+  "<set-by-opencode-plugin>",
+  "__HARNESS_OPENCODE_SKILLS_PATH__",
+]
+
+// Pure sentinel -> resolved-path mapping (no file I/O), extracted from
+// rewriteOpencodeSkillsPath so it is unit-testable in isolation.
+export function mapSkillsPaths(paths: string[], resolved: string): string[] {
+  return paths.map((p) => (SKILLS_PATH_SENTINELS.includes(p) ? resolved : p))
 }
 
 async function rewriteOpencodeSkillsPath(target: string): Promise<void> {
@@ -187,11 +217,7 @@ async function rewriteOpencodeSkillsPath(target: string): Promise<void> {
       skills?: { paths?: string[] }
     }
     if (!cfg.skills || !Array.isArray(cfg.skills.paths)) return
-    const next = cfg.skills.paths.map((p) =>
-      p === "<set-by-opencode-plugin>" || p === "__HARNESS_OPENCODE_SKILLS_PATH__"
-        ? SKILLS_OUT
-        : p,
-    )
+    const next = mapSkillsPaths(cfg.skills.paths, SKILLS_OUT)
     if (JSON.stringify(next) === JSON.stringify(cfg.skills.paths)) return
     cfg.skills.paths = next
     await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8")
@@ -250,6 +276,22 @@ async function policyCheck(
 }
 
 let bootstrapped: Promise<void> | null = null
+
+// Confirm-first tier linkage between the two hooks. `tool.execute.before` has
+// the real command (so it runs the policy check) but opencode's before-hook is
+// allow/deny only. When the harness returns requires_confirmation we record the
+// tool call's `callID` here instead of throwing; `permission.ask` then turns
+// that into an interactive "ask" prompt. Both hooks carry a typed `callID`, so
+// the join never depends on parsing the opaque Permission.metadata.
+//
+// Firing-order assumption: tool.execute.before runs before permission.ask for
+// the same callID. Verified by signature/field typing only -- opencode core is
+// not vendored here, so it is not runtime-verified. The design degrades
+// benignly: hard-denies still throw in tool.execute.before (the safety floor
+// never depends on permission.ask firing); the worst case if ordering differs
+// or permission.ask never fires is a confirm-first command runs unprompted -- a
+// degraded tier, matching the plugin's documented fail-open stance.
+const confirmFirstCallIDs = new Set<string>()
 
 async function bootstrapOnce(target: string): Promise<void> {
   if (bootstrapped) return bootstrapped
@@ -315,17 +357,26 @@ export const AstrojonesDev: Plugin = async ({ worktree, directory }) => {
           : ""
       if (!command) return
       const decision = await policyCheck(command, target)
-      // opencode's tool.execute.before is allow/deny only — it has no
-      // confirmation prompt here. The harness "confirm-first" tier
-      // (requires_confirmation) therefore fails CLOSED: we block with the
-      // reason rather than let it run unprompted, which would silently drop
-      // a safety tier that exists on the Claude surface. Wiring the richer
-      // permission.ask hook to restore the interactive tier is a follow-up.
-      if (!decision.allowed || decision.requires_confirmation) {
-        const error = new Error(
+      // Hard-deny only here: opencode's tool.execute.before is allow/deny, so a
+      // throw is the only way to block. The harness "confirm-first" tier
+      // (requires_confirmation) is NOT a deny — record the callID so the
+      // permission.ask hook can prompt interactively instead of hard-blocking.
+      if (!decision.allowed) {
+        throw new Error(
           `[astrojones-dev] command blocked by policy: ${decision.reason}`,
         )
-        throw error
+      }
+      if (decision.requires_confirmation) {
+        confirmFirstCallIDs.add(input.callID)
+      }
+    },
+    "permission.ask": async (input, output) => {
+      // Restore the interactive confirm-first tier: if tool.execute.before
+      // flagged this tool call as requires_confirmation, prompt the user
+      // instead of auto-approving. Otherwise leave opencode's own decision
+      // untouched. (See confirmFirstCallIDs for the firing-order assumption.)
+      if (input.callID && confirmFirstCallIDs.delete(input.callID)) {
+        output.status = "ask"
       }
     },
   }
