@@ -46,11 +46,7 @@ def serena_spec() -> str:
 
 
 def serena_args(root: str) -> list[str]:
-    """Return the uvx argv to start the pinned Serena MCP server, with project data in ~/.harness."""
-    from repo_agent_harness.paths import repo_state_dir  # noqa: PLC0415
-
-    serena_dir = repo_state_dir(root) / "serena"
-    serena_dir.mkdir(parents=True, exist_ok=True)
+    """Return the uvx argv to start the pinned Serena MCP server."""
     return [
         "--from",
         serena_spec(),
@@ -59,7 +55,7 @@ def serena_args(root: str) -> list[str]:
         "--context",
         "claude-code",
         "--project",
-        str(serena_dir),
+        root,
         "--enable-web-dashboard",
         "false",
         "--enable-gui-log-window",
