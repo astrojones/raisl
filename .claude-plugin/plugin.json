@@ -1,7 +1,7 @@
 {
   "name": "astrojones-dev",
   "version": "0.7.0",
-  "description": "The astrojones org plugin: nuklaut deploy knowledge, app scaffolding, repo-carried deploy tools, CI failure diagnosis, plus the harness's Claude Code surface — coding-workflow skills, subagents, safety-hook shims, and /harness-init. Bundles the repo-agent-harness MCP server (servers/harness-mcp/) — auto-connects at session start, no per-repo setup needed.",
+  "description": "The astrojones org plugin: nuklaut deploy knowledge, /new-app scaffolding (born harnessed), deploy-doctor CI diagnosis, plus the repo-agent-harness Claude Code surface — coding-workflow skills, subagents, safety-hook shims, and /harness-init. Bundles the repo-agent-harness MCP server — auto-connects at session start. Use /harness-init to scaffold agent/ config into each repo; pass --pin for a project .mcp.json (CI / non-CC clients only).",
   "author": {
     "name": "astrojones",
     "url": "https://github.com/astrojones"
