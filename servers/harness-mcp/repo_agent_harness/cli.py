@@ -16,6 +16,7 @@ from repo_agent_harness import (
     agent_hooks,
     context,
     deploy,
+    drift,
     gateway,
     git,
     health,
@@ -168,6 +169,17 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("deploy-logs", parents=[common])
     sp.add_argument("run_id")
     sp.add_argument("--tail", type=int, default=200)
+    sp = sub.add_parser(
+        "drift-check",
+        parents=[common],
+        help="compare harness prompt bodies to on-disk SKILL.md copies (warning only, never errors)",
+    )
+    sp = sub.add_parser(
+        "sync-prompts",
+        parents=[common],
+        help="refresh SKILL.md copies to match the harness (idempotent; --force overwrites in-sync files)",
+    )
+    sp.add_argument("--force", action="store_true", help="overwrite even in-sync files")
     sub.add_parser(
         "gateway-snapshot",
         parents=[common],
@@ -276,6 +288,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "deploy-status": lambda: _deploy_status(args.limit, root),
         "deploy-logs": lambda: _deploy_logs(args.run_id, args.tail, root),
+        "drift-check": lambda: drift.check_repo_drift(root),
+        "sync-prompts": lambda: drift.sync_prompts(root, force=args.force),
         "health": lambda: health.run(root, only=args.check, refresh=args.refresh).model_dump(),
         "gateway-snapshot": lambda: gateway.generate_snapshot(root),
         "init": lambda: scaffold.init_repo(
