@@ -30,6 +30,7 @@ except ImportError as exc:  # pragma: no cover
 from repo_agent_harness import (
     context,
     deploy,
+    drift,
     gateway,
     git,
     health,
@@ -270,6 +271,41 @@ def repo_bootstrap_status() -> dict:
     """
     root = git.repo_root()
     return scaffold.inspect_bootstrap(root) if root else _no_repo()
+
+
+@mcp.tool()
+def repo_drift_check() -> dict:
+    """Compare the harness server's prompt bodies to the on-disk SKILL.md copies.
+
+    Drift is a warning, never an error. The plugin's load-time hook calls
+    this and emits a console.warn listing drifted files; the user is
+    expected to refresh via ``sync_prompts`` (or the matching CLI
+    subcommand ``repo-agent-harness sync-prompts``) when they want the
+    offline copy updated.
+
+    The comparison is body-only: YAML frontmatter differences and trailing
+    whitespace are not flagged. The check walks the plugin repo's
+    ``skills/<name>/SKILL.md`` directory; missing files are reported as
+    "missing" (not drifted) so the operator can distinguish "needs first
+    write" from "needs refresh".
+    """
+    root = git.repo_root()
+    return drift.check_repo_drift(root) if root else _no_repo()
+
+
+@mcp.tool()
+def repo_drift_sync(
+    force: Annotated[bool, Field(description="Overwrite even in-sync files")] = False,
+) -> dict:
+    """Refresh the plugin's SKILL.md copies to match the harness prompt bodies.
+
+    Idempotent: by default only writes when the on-disk body has drifted
+    or the file is missing. Pass ``force=True`` to overwrite every file,
+    including in-sync ones (useful after a manual harness-side edit that
+    you want reflected everywhere immediately).
+    """
+    root = git.repo_root()
+    return drift.sync_prompts(root, force=force) if root else _no_repo()
 
 
 @mcp.tool()
