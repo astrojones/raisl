@@ -114,6 +114,29 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--pin", default=None, help="commit sha to pin the harness spec in .mcp.json")
     sp.add_argument("--spec", default=None, help="override the full harness requirement spec")
     sp = sub.add_parser(
+        "bootstrap",
+        parents=[common],
+        help=(
+            "first-touch materialization of the per-repo harness "
+            "(claude | opencode | both); plugin's load-time hook calls this"
+        ),
+    )
+    sp.add_argument(
+        "--target",
+        choices=["claude", "opencode", "both"],
+        default="claude",
+        help="which per-assistant surface to materialize (default: claude)",
+    )
+    sp.add_argument(
+        "--agents-md",
+        choices=["auto", "skip", "overwrite"],
+        default="skip",
+        help="AGENTS.md handling: auto (append section), overwrite (replace), skip (default)",
+    )
+    sp.add_argument("--force", action="store_true", help="overwrite existing harness-managed files")
+    sp.add_argument("--pin", default=None, help="commit sha to pin the harness spec in .mcp.json")
+    sp.add_argument("--spec", default=None, help="override the full harness requirement spec")
+    sp = sub.add_parser(
         "hook",
         parents=[common],
         help="Claude Code hook handler: read the event JSON on stdin, print the decision (always exits 0)",
@@ -179,6 +202,14 @@ def main(argv: list[str] | None = None) -> int:
         "gateway-snapshot": lambda: gateway.generate_snapshot(root),
         "init": lambda: scaffold.init_repo(
             root,
+            agents_md=args.agents_md,
+            force=args.force,
+            pin=args.pin,
+            spec=args.spec,
+        ),
+        "bootstrap": lambda: scaffold.bootstrap_repo(
+            root,
+            target=args.target,
             agents_md=args.agents_md,
             force=args.force,
             pin=args.pin,
