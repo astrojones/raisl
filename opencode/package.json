@@ -1,14 +1,14 @@
 {
-  "name": "astrojones-dev-opencode",
+  "name": "raisl-opencode",
   "version": "0.7.0",
   "type": "module",
-  "description": "opencode half of the astrojones-dev plugin: materializes workflow skills/commands/agents from the harness MCP server SSOT and wires the policy hook.",
+  "description": "opencode half of the raisl plugin: materializes workflow skills/commands/agents from the harness MCP server SSOT and wires the policy hook.",
   "license": "MIT",
-  "main": "plugin/astrojones-dev.ts",
+  "main": "plugin/raisl.ts",
   "exports": {
     ".": {
-      "import": "./plugin/astrojones-dev.ts",
-      "types": "./plugin/astrojones-dev.ts"
+      "import": "./plugin/raisl.ts",
+      "types": "./plugin/raisl.ts"
     }
   },
   "files": [

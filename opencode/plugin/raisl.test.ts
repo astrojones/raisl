@@ -5,7 +5,7 @@ import {
   firstLine,
   mapSkillsPaths,
   SKILLS_PATH_SENTINELS,
-} from "./astrojones-dev"
+} from "./raisl"
 
 function matchesDestructive(cmd: string): boolean {
   return DESTRUCTIVE_FALLBACK.some((re) => re.test(cmd))

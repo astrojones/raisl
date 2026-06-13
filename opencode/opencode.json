@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["./plugin/astrojones-dev.ts"],
+  "plugin": ["./plugin/raisl.ts"],
   "mcp": {
     "repo-agent-harness": {
       "type": "local",
