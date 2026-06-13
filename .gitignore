@@ -6,3 +6,6 @@ __pycache__/
 .ruff_cache/
 uv.lock
 .DS_Store
+
+# local Claude Code session state
+.claude/
