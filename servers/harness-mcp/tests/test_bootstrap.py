@@ -1,0 +1,169 @@
+"""Tests for the per-repo bootstrap CLI subcommand.
+
+The bootstrap is what the plugin's first-touch hook runs to materialize the
+per-repo harness (agent/, AGENTS.md, optional .mcp.json, optional opencode
+section). The CLI subcommand is the source of truth — the MCP ``repo_*`` tools
+expose a read-only view of the same data.
+
+The behavior is split off from ``init`` so ``init`` keeps its narrow "write
+``.mcp.json`` for non-plugin environments" contract and ``bootstrap`` owns the
+full first-touch surface. Both stay idempotent and section-merge based.
+"""
+
+from __future__ import annotations
+
+import json
+
+from repo_agent_harness import scaffold
+
+# ---------------------------------------------------------------------------
+# Default behavior (target="claude") — same shape as init, no surprise
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_default_creates_agent_tree_and_skips_mcp_json(repo):
+    """Default bootstrap writes agent/ but skips .mcp.json (which needs --pin)."""
+    res = scaffold.bootstrap_repo(str(repo))
+    assert res["ok"]
+    assert (repo / "agent").is_dir()
+    assert not (repo / ".mcp.json").is_file(), ".mcp.json only with --pin/--spec"
+    assert not (repo / "AGENTS.md").is_file(), "default target skips AGENTS.md (opt-in via agents_md)"
+
+
+def test_bootstrap_with_pin_writes_mcp_json(repo):
+    """Bootstrap --pin writes .mcp.json with the pinned harness spec."""
+    res = scaffold.bootstrap_repo(str(repo), pin="abc1234")
+    assert res["ok"]
+    assert (repo / ".mcp.json").is_file()
+    cfg = json.loads((repo / ".mcp.json").read_text())
+    assert "repo-agent-harness" in cfg["mcpServers"]
+    assert any("@abc1234#subdirectory=mcp" in str(a) for a in cfg["mcpServers"]["repo-agent-harness"]["args"])
+
+
+def test_bootstrap_opencode_target_creates_opencode_dir(repo):
+    """target='opencode' creates .opencode/opencode.json with the harness wiring.
+
+    Does NOT create .mcp.json (opencode reads opencode.json, not .mcp.json).
+    """
+    res = scaffold.bootstrap_repo(str(repo), target="opencode")
+    assert res["ok"]
+    assert not (repo / ".mcp.json").is_file()
+    oc_path = repo / ".opencode" / "opencode.json"
+    assert oc_path.is_file()
+    cfg = json.loads(oc_path.read_text())
+    # opencode.json has `mcp` (not `mcpServers`); the bootstrap must use the right key.
+    assert "mcp" in cfg
+    assert "repo-agent-harness" in cfg["mcp"]
+    assert "command" in cfg["mcp"]["repo-agent-harness"]
+    assert "skills" in cfg, "opencode surface should pre-declare the skills.paths entry"
+    assert any("opencode-plugin" in p for p in cfg["skills"].get("paths", []))
+
+
+def test_bootstrap_both_target_creates_claude_and_opencode_artifacts(repo):
+    """target='both' writes agent/ (Claude side) and .opencode/opencode.json (opencode side)."""
+    res = scaffold.bootstrap_repo(str(repo), target="both")
+    assert res["ok"]
+    assert (repo / "agent").is_dir()
+    assert (repo / ".opencode" / "opencode.json").is_file()
+    assert not (repo / ".mcp.json").is_file(), ".mcp.json only with --pin/--spec"
+
+
+def test_bootstrap_opencode_section_is_idempotent(repo):
+    """Two opencode-target bootstraps produce the same .opencode/opencode.json."""
+    scaffold.bootstrap_repo(str(repo), target="opencode")
+    first = (repo / ".opencode" / "opencode.json").read_text()
+    scaffold.bootstrap_repo(str(repo), target="opencode")
+    second = (repo / ".opencode" / "opencode.json").read_text()
+    assert first == second
+
+
+def test_bootstrap_opencode_merges_existing_opencode_json(repo):
+    """If .opencode/opencode.json exists, bootstrap merges instead of replacing."""
+    (repo / ".opencode").mkdir()
+    (repo / ".opencode" / "opencode.json").write_text(
+        json.dumps({"agent": {"my-agent": {"description": "custom", "mode": "subagent"}}}, indent=2)
+    )
+    res = scaffold.bootstrap_repo(str(repo), target="opencode")
+    cfg = json.loads((repo / ".opencode" / "opencode.json").read_text())
+    assert cfg["agent"]["my-agent"]["description"] == "custom", "user's agent must be preserved"
+    assert "mcp" in cfg, "harness wiring must have been merged in"
+    assert "repo-agent-harness" in cfg["mcp"]
+    assert any("opencode.json" in s for s in res.get("merged", []) + res.get("skipped", []))
+
+
+# ---------------------------------------------------------------------------
+# Unknown target -> structured error
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_unknown_target_returns_error(repo):
+    """An unknown --target value fails loud, not silently."""
+    res = scaffold.bootstrap_repo(str(repo), target="wat")
+    assert res["ok"] is False
+    assert "target" in res["error"]
+    assert "wat" in res["error"]
+
+
+# ---------------------------------------------------------------------------
+# CLI subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_cli_bootstrap_subcommand(repo, monkeypatch, capsys):
+    """`bootstrap --target both --pin <sha> --agents-md overwrite` writes everything."""
+    from repo_agent_harness import cli
+
+    monkeypatch.chdir(repo)
+    code = cli.main(
+        [
+            "bootstrap",
+            "--target",
+            "both",
+            "--agents-md",
+            "overwrite",
+            "--pin",
+            "deadbee",
+        ]
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert out["ok"]
+    assert (repo / ".mcp.json").is_file()
+    assert (repo / "agent").is_dir()
+    assert (repo / "AGENTS.md").is_file()
+    assert (repo / ".opencode" / "opencode.json").is_file()
+
+
+# ---------------------------------------------------------------------------
+# MCP tool wrapper (read-only inspection of the bundle the CLI would write)
+# ---------------------------------------------------------------------------
+
+
+def test_repo_bootstrap_status_tool_inspects_existing_state(repo, monkeypatch):
+    """repo_bootstrap_status reports what would be written without writing."""
+    from repo_agent_harness import server
+
+    monkeypatch.chdir(repo)
+    # Empty repo: nothing present, the tool reports the gaps.
+    status = server.repo_bootstrap_status()
+    assert status["ok"]
+    assert status["root"] == str(repo)
+    assert status["present"]["mcp_json"] is False
+    assert status["present"]["agent_tree"] is False
+    assert status["present"]["opencode_json"] is False
+    assert status["present"]["agents_md"] is False
+
+
+def test_repo_bootstrap_status_tool_reports_present_files(repo, monkeypatch):
+    """After a full bootstrap, the status tool reports what's now present."""
+    from repo_agent_harness import scaffold, server
+
+    monkeypatch.chdir(repo)
+    scaffold.bootstrap_repo(
+        str(repo), target="both", agents_md="overwrite", pin="abc1234"
+    )
+    status = server.repo_bootstrap_status()
+    assert status["present"]["mcp_json"] is True
+    assert status["present"]["agent_tree"] is True
+    assert status["present"]["opencode_json"] is True
+    assert status["present"]["agents_md"] is True

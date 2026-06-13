@@ -34,6 +34,7 @@ from repo_agent_harness import (
     impact,
     policies,
     prompts_registry,
+    scaffold,
     verify,
     watcher,
 )
@@ -250,6 +251,23 @@ def repo_prompt_get(
         "source": entry.source,
         "checksum": entry.checksum,
     }
+
+
+@mcp.tool()
+def repo_bootstrap_status() -> dict:
+    """Read-only inspection of which per-repo harness files are present.
+
+    The actual materialization happens via the ``bootstrap`` CLI subcommand
+    (or the ``init`` subcommand for the narrow opt-in case). The plugin's
+    load-time hook calls the CLI; this tool exists so the model — and the
+    plugin — can ask "is the harness installed here?" without writing.
+
+    Returns a dict with ``ok``, ``root``, and ``present`` (mapping of
+    file to bool: ``mcp_json``, ``agent_tree``, ``agents_md``,
+    ``opencode_json``).
+    """
+    root = git.repo_root()
+    return scaffold.inspect_bootstrap(root) if root else _no_repo()
 
 
 # ----------------------------------------------------------------------- resources
