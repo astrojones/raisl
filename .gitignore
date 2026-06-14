@@ -10,3 +10,4 @@ uv.lock
 # local Claude Code session state
 .claude/*
 !.claude/settings.json
+!.claude/hooks/
