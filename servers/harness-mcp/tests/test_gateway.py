@@ -143,3 +143,68 @@ def test_server_exposes_proxied_serena_tools():
 
     names = {t.name for t in asyncio.run(server.mcp.list_tools())}
     assert {"serena_find_symbol", "serena_initial_instructions", "repo_health"} <= names
+
+
+# ----------------------------------------------------------------- launch / command
+
+
+def test_serena_args_launch_the_installed_server_not_uvx():
+    args = gateway.serena_args("/repo")
+    assert args[0] == "start-mcp-server"
+    assert "--from" not in args
+    assert not any("uvx" in a or "git+https" in a for a in args)
+    assert args[args.index("--project") + 1] == "/repo"
+
+
+def test_serena_command_env_override_wins(monkeypatch):
+    monkeypatch.setenv(gateway.SERENA_CMD_ENV, "/custom/serena")
+    assert gateway.serena_command() == "/custom/serena"
+
+
+def test_serena_command_prefers_script_next_to_interpreter(monkeypatch, tmp_path):
+    monkeypatch.delenv(gateway.SERENA_CMD_ENV, raising=False)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "serena").write_text("")
+    monkeypatch.setattr(gateway.sys, "executable", str(bindir / "python"))
+    assert gateway.serena_command() == str(bindir / "serena")
+
+
+def test_serena_command_falls_back_to_path_name(monkeypatch, tmp_path):
+    monkeypatch.delenv(gateway.SERENA_CMD_ENV, raising=False)
+    bindir = tmp_path / "empty"
+    bindir.mkdir()
+    monkeypatch.setattr(gateway.sys, "executable", str(bindir / "python"))
+    assert gateway.serena_command() == "serena"
+
+
+def test_ensure_client_wires_serena_command_into_the_transport(monkeypatch, tmp_path):
+    # No injected transport: _ensure_client must build the child launch from
+    # serena_command() + serena_args(), never the old uvx path — and never connect.
+    captured = {}
+
+    def fake_transport(*, command, args, cwd, keep_alive):
+        captured.update(command=command, args=args, cwd=cwd, keep_alive=keep_alive)
+        return "TRANSPORT"
+
+    monkeypatch.setattr(gateway, "StdioTransport", fake_transport)
+    monkeypatch.setattr(gateway, "Client", lambda transport: ("CLIENT", transport))
+    monkeypatch.setenv(gateway.SERENA_CMD_ENV, "/opt/serena")
+
+    gw = gateway.SerenaGateway(str(tmp_path))
+    client = gw._ensure_client()
+
+    assert client == ("CLIENT", "TRANSPORT")
+    assert captured["command"] == "/opt/serena"
+    assert captured["args"] == gateway.serena_args(str(tmp_path))
+    assert captured["cwd"] == str(tmp_path)
+    assert captured["keep_alive"] is True
+
+
+def test_pyproject_pins_serena_to_the_same_sha():
+    pyproject = Path(__file__).parent.parent / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+    m = re.search(r"oraios/serena@([0-9a-f]{40})", text)
+    assert m, "serena-agent git dependency missing from pyproject.toml"
+    assert m.group(1) == gateway.SERENA_PIN, "pyproject serena pin drifted from gateway.SERENA_PIN"
+    assert "serena-agent @ git+https://github.com/oraios/serena@" in text
