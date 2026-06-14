@@ -1,4 +1,4 @@
-"""Tests for scaffold.init_repo — the minimal .mcp.json escape-hatch installer."""
+"""Tests for scaffold.init_repo — the agent/ scaffolder with an opt-in .mcp.json escape hatch."""
 
 import json
 from pathlib import Path
@@ -13,34 +13,35 @@ def _mcp_config(repo: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# New behaviour: default init writes ONLY .mcp.json
+# Default behaviour: init scaffolds agent/; .mcp.json is opt-in (--pin/--spec)
 # ---------------------------------------------------------------------------
 
 
-def test_init_default_creates_only_mcp_json(repo):
-    """Default init writes ONLY .mcp.json — no agent/ tree, no AGENTS.md."""
+def test_init_default_installs_agent_tree_only(repo):
+    """Default init scaffolds agent/ — no .mcp.json (opt-in via --pin/--spec), no AGENTS.md."""
     res = scaffold.init_repo(str(repo))
     assert res["ok"]
-    assert (repo / ".mcp.json").is_file()
-    assert not (repo / "agent").exists()
+    assert (repo / "agent").is_dir()
+    assert not (repo / ".mcp.json").is_file()
     assert not (repo / "AGENTS.md").is_file()
 
 
 def test_init_agents_md_overwrite_creates_agents_md(repo):
-    """agents_md='overwrite' additionally creates AGENTS.md."""
+    """agents_md='overwrite' additionally creates AGENTS.md alongside agent/ (still no .mcp.json)."""
     res = scaffold.init_repo(str(repo), agents_md="overwrite")
     assert res["ok"]
     assert (repo / "AGENTS.md").is_file()
-    assert (repo / ".mcp.json").is_file()
-    assert not (repo / "agent").exists()
+    assert (repo / "agent").is_dir()
+    assert not (repo / ".mcp.json").is_file()
 
 
 def test_init_no_force_skips_existing_mcp_json_entry(repo):
-    """Without --force, existing .mcp.json entries are not overwritten."""
-    scaffold.init_repo(str(repo))
-    res2 = scaffold.init_repo(str(repo))
+    """Without --force, an existing .mcp.json harness entry is not overwritten."""
+    spec = scaffold.harness_spec()
+    scaffold.init_repo(str(repo), spec=spec)
+    res2 = scaffold.init_repo(str(repo), spec=spec)
     assert res2["ok"]
-    # harness entry already exists; should be in skipped or merged
+    # harness entry already exists; should be reported skipped (or merged)
     assert any("repo-agent-harness" in s for s in res2.get("skipped", []) + res2.get("merged", []))
 
 
@@ -59,7 +60,7 @@ def test_init_pin_embeds_sha_in_mcp_json(repo):
 
 
 def test_init_writes_mcp_json_with_single_server(repo):
-    scaffold.init_repo(str(repo))
+    scaffold.init_repo(str(repo), spec=scaffold.harness_spec())
     cfg = _mcp_config(repo)
     assert set(cfg["mcpServers"]) == {"repo-agent-harness"}, "serena is proxied through the harness now"
     args = cfg["mcpServers"]["repo-agent-harness"]["args"]
@@ -87,7 +88,7 @@ def test_init_merges_existing_mcp_json(repo):
     (repo / ".mcp.json").write_text(
         json.dumps({"mcpServers": {"other": {"command": "x"}, "serena": {"command": "custom"}}})
     )
-    res = scaffold.init_repo(str(repo))
+    res = scaffold.init_repo(str(repo), spec=scaffold.harness_spec())
     cfg = _mcp_config(repo)
     assert cfg["mcpServers"]["other"] == {"command": "x"}
     assert cfg["mcpServers"]["serena"] == {"command": "custom"}, "existing entry must not be overwritten"
@@ -101,7 +102,7 @@ def test_init_removes_harness_installed_serena_entry(repo):
         "args": ["--from", "git+https://github.com/oraios/serena@abc123", "serena", "start-mcp-server"],
     }
     (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"serena": old_entry}}))
-    res = scaffold.init_repo(str(repo))
+    res = scaffold.init_repo(str(repo), spec=scaffold.harness_spec())
     cfg = _mcp_config(repo)
     assert "serena" not in cfg["mcpServers"]
     assert any("serena" in r for r in res["removed"])

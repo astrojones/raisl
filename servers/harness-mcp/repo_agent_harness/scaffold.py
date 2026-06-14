@@ -7,9 +7,10 @@ own ``agent/`` policies and tools are held byte-identical to it by a drift-guard
 
 Subcommand split:
 
-- ``init`` — narrow, opt-in: writes a project ``.mcp.json`` (with ``--pin`` /
-  ``--spec``) for non-plugin environments. Skips ``agent/`` and ``AGENTS.md``
-  unless explicitly requested. This is the escape-hatch subcommand.
+- ``init`` — claude-side first-touch: always installs ``agent/`` and, opt-in via
+  ``--agents-md``, ``AGENTS.md``. Writes a project ``.mcp.json`` only with
+  ``--pin`` / ``--spec`` (the escape hatch for non-plugin / CI clients). No
+  opencode side — that is ``bootstrap``'s ``target="opencode"|"both"``.
 - ``bootstrap`` — full first-touch: writes ``agent/`` (always), ``AGENTS.md``
   (with the section marker, opt-in via ``--agents-md``), ``.mcp.json`` (when
   ``--pin``/``--spec`` is set), and the opencode side (``target="opencode"|"both"``).
