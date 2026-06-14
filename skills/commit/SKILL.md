@@ -1,5 +1,5 @@
 ---
-name: commit-semantic
+name: commit
 description: Creates semantic commits from working tree changes, grouping related changes chronologically and semantically. Plans commit groups with the main agent, then fans out to a swarm of Haiku subagents that draft commit messages in parallel before the main agent commits sequentially. Use when the user asks to clean up git status, create semantic commits, or organize changes into logical commits.
 ---
 

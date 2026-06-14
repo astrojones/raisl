@@ -34,7 +34,7 @@ setup.
 - **Safety hooks** — a safe-shell + secret-read guard (PreToolUse) and a post-edit
   verification nudge (PostToolUse).
 - **Generic coding-workflow skills** — `bugfix`, `feature`, `refactor`, `test`, `implement`,
-  `commit-semantic`.
+  `commit`.
 - **Workflow subagents** — `implementer`, `reviewer`, `test-runner` (TDD streams, diff
   review, narrow verification), `explorer` (read-only symbol navigation), and
   `fullstack-architect` (typed UI⇄backend vertical slices).

@@ -1,7 +1,7 @@
 """Tests for the harness MCP server's prompts SSOT.
 
 The harness exposes per-repo workflow prompts (bugfix, feature, refactor, test,
-implement, commit-semantic) and the /harness-init workflow body via @mcp.prompt
+implement, commit) and the /harness-init workflow body via @mcp.prompt
 registration. These are the single source of truth that the Claude and opencode
 plugin surfaces derive from.
 
@@ -26,7 +26,7 @@ EXPECTED_PROMPTS: frozenset[str] = frozenset(
         "refactor",
         "test",
         "implement",
-        "commit-semantic",
+        "commit",
         "harness-init",
     }
 )

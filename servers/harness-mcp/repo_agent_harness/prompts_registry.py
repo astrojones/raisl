@@ -1,7 +1,7 @@
 """Per-repo workflow prompts exposed by the harness MCP server.
 
 The bodies in ``prompts/`` are the single source of truth for the workflow
-prompts (bugfix, feature, refactor, test, implement, commit-semantic) and the
+prompts (bugfix, feature, refactor, test, implement, commit) and the
 /harness-init workflow. They are exposed via ``@mcp.prompt`` registration so
 any MCP-aware assistant that supports ``prompts/list`` discovers them, and
 also via the ``repo_prompt_get`` tool wrapper for clients (opencode) that
@@ -91,7 +91,7 @@ _DESCRIPTIONS: dict[str, str] = {
         "or a clear inline description. Runs the repo's end-to-end pipeline: "
         "spec gate, plan, implement via parallel TDD agents, verify, ship."
     ),
-    "commit-semantic": (
+    "commit": (
         "Use when staging and committing working-tree changes. Groups "
         "related changes into atomic conventional commits, one logical "
         "change per commit, in a build-green order."
@@ -109,7 +109,7 @@ _TITLES: dict[str, str] = {
     "refactor": "Refactor workflow",
     "test": "Test workflow",
     "implement": "Spec-driven TDD pipeline",
-    "commit-semantic": "Semantic commits",
+    "commit": "Semantic commits",
     "harness-init": "Bootstrap the per-repo harness",
 }
 
