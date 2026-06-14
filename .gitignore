@@ -8,6 +8,10 @@ uv.lock
 .DS_Store
 .python-version
 
+# harness bootstrap scaffold (local only — not tracked in this repo)
+/agent/
+/.opencode/
+
 # local Claude Code session state
 .claude/*
 !.claude/settings.json
