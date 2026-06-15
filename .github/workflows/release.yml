@@ -16,6 +16,9 @@ jobs:
     uses: astrojones/.github/.github/workflows/release.yml@main
     secrets: inherit
     with:
+      # raisl is PUBLIC — the self-hosted nuklaut runner won't take its jobs, so
+      # release on free GitHub-hosted runners.
+      runs-on: '["ubuntu-latest"]'
       version-files: |
         .claude-plugin/plugin.json
         servers/harness-mcp/pyproject.toml
