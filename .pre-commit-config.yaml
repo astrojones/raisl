@@ -1,0 +1,12 @@
+# Auto format/fix runs here, at the commit boundary — not edit-time.
+# The PostToolUse quality-gate hook is read-only; this is the single source of
+# truth for ruff format/fix. Scoped to the package that owns a pyproject.toml.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.17
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^servers/harness-mcp/
+      - id: ruff-format
+        files: ^servers/harness-mcp/
