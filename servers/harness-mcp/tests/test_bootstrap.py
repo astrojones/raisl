@@ -231,38 +231,40 @@ def test_repo_bootstrap_tool_no_repo_errors(tmp_path, monkeypatch):
     assert not (tmp_path / "agent").exists(), "must not write outside a git repo"
 
 
-def test_auto_bootstrap_writes_agent_tree_and_agents_md(repo):
-    """Connect-time auto-bootstrap harnesses the repo, AGENTS.md included (opt-out default)."""
-    from repo_agent_harness import server
+def test_connect_does_not_materialize_zero_footprint(repo, monkeypatch):
+    """Connecting to a repo writes nothing — the harness is zero-footprint by default.
 
-    server._auto_bootstrap(repo)
-    assert (repo / "agent").is_dir()
-    assert (repo / "AGENTS.md").is_file()
-
-
-def test_auto_bootstrap_respects_agents_md_opt_out_sentinel(repo):
-    """With the .harness-no-agents-md sentinel, auto-bootstrap writes agent/ but not AGENTS.md."""
-    from repo_agent_harness import server
-
-    (repo / server._AGENTS_MD_OPT_OUT).write_text("")
-    server._auto_bootstrap(repo)
-    assert (repo / "agent").is_dir(), "the harness tooling still installs"
-    assert not (repo / "AGENTS.md").is_file(), "AGENTS.md suppressed by the opt-out sentinel"
-
-
-def test_auto_bootstrap_fails_open_on_malformed_repo(repo):
-    """A pre-existing malformed .opencode/opencode.json must not crash the server.
-
-    _auto_bootstrap runs in the lifespan before yield, so any exception there would take
-    down the whole harness server for the session. Malformed JSON raises JSONDecodeError
-    (a ValueError, not OSError), so the connect-time path must swallow broadly and fail open.
+    The bundled MCP server (tools + instructions + prompts) is all a Claude Code
+    session needs, so opening a repo must not litter it with harness files. agent/
+    and AGENTS.md are materialized only on demand via the repo_bootstrap tool / CLI.
+    The connect-time lifespan therefore must never call scaffold.bootstrap_repo, and
+    the worktree must stay clean.
     """
-    from repo_agent_harness import server
+    import anyio
+    from repo_agent_harness import scaffold, server
 
-    (repo / ".opencode").mkdir()
-    (repo / ".opencode" / "opencode.json").write_text("{ this is not valid json")
-    server._auto_bootstrap(repo)  # must not raise
-    assert (repo / "agent").is_dir(), "the Claude-side agent/ tree still installs"
+    monkeypatch.chdir(repo)
+    calls: list = []
+    monkeypatch.setattr(scaffold, "bootstrap_repo", lambda *a, **k: calls.append((a, k)))
+
+    class _DummyWatcher:
+        """Neutralize the real worktree watcher so we test only the connect contract."""
+
+        def __init__(self, *a, **k) -> None: ...
+        async def run(self) -> None: ...
+        def stop(self) -> None: ...
+
+    monkeypatch.setattr(server.watcher, "RepoWatcher", _DummyWatcher)
+
+    async def _connect() -> None:
+        async with server._lifespan(server.mcp):
+            pass
+
+    anyio.run(_connect)
+
+    assert calls == [], "connect must not materialize the harness (zero-footprint)"
+    assert not (repo / "agent").exists(), "no agent/ tree written on connect"
+    assert not (repo / "AGENTS.md").exists(), "no AGENTS.md written on connect"
 
 
 def test_repo_bootstrap_tool_surfaces_errors(repo, monkeypatch):

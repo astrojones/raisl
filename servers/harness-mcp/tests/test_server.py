@@ -8,8 +8,13 @@ def test_server_instructions_present():
     text = server.mcp.instructions
     assert text
     assert "repo_context_overview" in text
-    assert "AGENTS.md" in text
     assert "repo_verify_changed" in text
+    # Zero-footprint default: the navigation discipline and the explorer-preference
+    # live in the always-read instructions, not in a per-repo AGENTS.md.
+    assert "serena" in text
+    assert "explorer" in text
+    # Materialization is opt-in, surfaced here so the model knows the lever exists.
+    assert "repo_bootstrap" in text
 
 
 def test_tool_functions_callable(repo, monkeypatch):

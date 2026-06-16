@@ -1,8 +1,8 @@
 # astrojones
 
 **The repo agent harness as a Claude Code plugin.** Install it once and every git repo you
-open is *born harnessed* — a coding agent gets safe, deterministic, repo-aware tooling and
-symbol-level code navigation, instead of improvising with raw shell.
+open gets safe, deterministic, repo-aware tooling and symbol-level code navigation — instead
+of a coding agent improvising with raw shell, and with **no harness files written into the repo**.
 
 `astrojones` is client-agnostic in spirit: the same harness server runs for Claude Code (bundled
 here, auto-connecting) and — pinned into a repo's `.mcp.json` — for CI and other MCP clients.
@@ -28,24 +28,31 @@ setup.
 - **Serena, proxied** through the same server as `serena_*` tools for semantic symbol
   navigation and editing — find definitions, references, call sites; edit by symbol, not by
   line guesswork.
-- **Auto-bootstrap on connect** — opening a repo with `astrojones` materializes the harness
-  (`agent/` policies + tools, and the `AGENTS.md` harness section). **AGENTS.md is opt-out**:
-  drop a `.harness-no-agents-md` sentinel at the repo root to keep `astrojones` from writing it.
+- **Zero-footprint by default** — opening a repo writes no harness files into it (serena keeps
+  its symbol index under `.serena/`, which it gitignores). The bundled server
+  (tools, an always-read `instructions` guide, and the workflow prompts) is everything Claude
+  Code needs. Materialize the on-disk harness (`agent/` policies + tools, an `AGENTS.md` guide)
+  only on demand with `repo_bootstrap` / `/harness-init` — for per-repo customization or
+  non-MCP clients (opencode/CI).
 - **Safety hooks** — a safe-shell + secret-read guard (PreToolUse) and a post-edit
   verification nudge (PostToolUse).
 - **Generic coding-workflow skills** — `bugfix`, `feature`, `refactor`, `test`, `implement`,
   `commit`.
 - **Workflow subagents** — `implementer`, `reviewer`, `test-runner` (TDD streams, diff
-  review, narrow verification), `explorer` (read-only symbol navigation), and
+  review, narrow verification), `explorer` (read-only symbol navigation — the harness-native
+  replacement for the built-in `Explore` agent; prefer it for any code exploration), and
   `fullstack-architect` (typed UI⇄backend vertical slices).
 
-## How the harness gets into a repo
+## Materializing the on-disk harness (opt-in)
+
+By default the harness writes **nothing** into your repos — the bundled server delivers the
+tools, the `instructions` guide, and the workflow prompts directly. Materialize the on-disk
+harness only when you want editable per-repo config or need to support a non-MCP client:
 
 | Path | When | Mechanism |
 |------|------|-----------|
-| **Auto** | You open an existing repo with `astrojones` connected | The server bootstraps it on connect (idempotent; AGENTS.md opt-out). |
-| **In-session, explicit** | A freshly-created repo, or on demand | Call the **`repo_bootstrap`** MCP tool (optionally `path=...` to target another repo, `pin=...` for a project `.mcp.json`). |
-| **Fallback** | CI / non-Claude-Code clients, or the MCP server is unreachable | `/harness-init` runs the bundled CLI: `uv run --project "${CLAUDE_PLUGIN_ROOT}/servers/harness-mcp" repo-agent-harness bootstrap --target both`. |
+| **In-session, explicit** | On demand — to edit `agent/` policies/health, or to harness a freshly-created repo | Call the **`repo_bootstrap`** MCP tool (optionally `path=...` to target another repo, `pin=...` for a project `.mcp.json`). |
+| **Fallback / CI** | Non-Claude-Code clients (opencode), CI, or the MCP server is unreachable | `/harness-init` runs the bundled CLI: `uv run --project "${CLAUDE_PLUGIN_ROOT}/servers/harness-mcp" repo-agent-harness bootstrap --target both`. |
 
 The workflow skills (`bugfix`, `feature`, …) and `/harness-init` live in the harness server
 as **prompts** (the single source of truth), exposed via `@mcp.prompt()` (Claude Code) and a

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -52,42 +51,20 @@ if TYPE_CHECKING:
 _serena = gateway.SerenaGateway(git.repo_root)
 
 
-_AGENTS_MD_OPT_OUT = ".harness-no-agents-md"
-
-
-def _auto_bootstrap(root: Path) -> None:
-    """Materialize the per-repo harness on server connect — best-effort, never fatal.
-
-    Any repo opened with the harness server connected is harnessed automatically:
-    the ``agent/`` tree (always) plus, since **AGENTS.md is opt-out**, the
-    ``AGENTS.md`` harness section — unless the repo carries a ``.harness-no-agents-md``
-    sentinel at its root, in which case AGENTS.md is left untouched. Idempotent.
-
-    A bootstrap failure (e.g. a read-only checkout) must never block server
-    startup, so disk errors are swallowed — the explicit ``repo_bootstrap`` tool
-    surfaces errors when called directly.
-    """
-    agents_md = "skip" if (root / _AGENTS_MD_OPT_OUT).exists() else "auto"
-    try:
-        scaffold.bootstrap_repo(str(root), target="both", agents_md=agents_md)
-    except Exception as exc:  # noqa: BLE001 — fail-open: runs in the lifespan before yield, so a bootstrap error here must never break server startup (e.g. a pre-existing malformed .opencode/opencode.json raises ValueError, not OSError)
-        logging.getLogger(__name__).warning("auto-bootstrap skipped for %s: %s", root, exc)
-
-
 @asynccontextmanager
 async def _lifespan(app: FastMCP) -> AsyncIterator[dict]:
-    """Auto-bootstrap the repo, run the watcher for the server's lifetime, reap Serena on shutdown.
+    """Run the worktree watcher for the server's lifetime and reap Serena on shutdown.
 
-    On connect the harness is materialized into the current repo (see
-    :func:`_auto_bootstrap`). The watcher marks the health cache stale on worktree
-    changes; checks only ever run on the next repo_health read. Serena is never
+    Connecting is **zero-footprint**: nothing is written into the repo. The bundled
+    server (tools + instructions + prompts) is everything a Claude Code session needs;
+    the ``agent/`` tree and the ``AGENTS.md`` guide are materialized only on demand via
+    the ``repo_bootstrap`` tool / CLI. The watcher marks the health cache stale on
+    worktree changes; checks only ever run on the next repo_health read. Serena is never
     started here — only the first serena_* tool call (or diagnostics health check)
     launches it.
     """
     _ = app
     root = git.repo_root()
-    if root:
-        _auto_bootstrap(Path(root))
     # a plain task, not a task group: the lifespan generator's yield must not sit
     # inside a cancel scope, or cancelled shutdown exits scopes in the wrong task
     repo_watcher = watcher.RepoWatcher(root, lambda paths: health.invalidate(root, paths)) if root else None
@@ -110,13 +87,26 @@ Safe, repo-aware tools for the git repo at the current working directory: repo f
 (repo_* tools) and semantic code navigation (serena_* tools, launched on first use —
 call serena_initial_instructions before symbol work).
 
-- Call repo_context_overview first. If its `harness` block reports harnessed=true, the
-  repo carries an AGENTS.md "Working in this repo" section — read it for the full workflow.
-- Prefer serena_* for symbols and repo_search_*/repo_read_range for files over reading
-  whole files; read precise ranges, never dump whole trees.
+- Call repo_context_overview first to orient (languages, entrypoints, important paths).
+- Navigate by symbol: prefer serena_* (find_symbol, find_referencing_symbols,
+  get_symbols_overview) for code and repo_search_*/repo_read_range for files. Read precise
+  ranges; never dump whole files or recursively read the tree.
+- In Claude Code, to map an unfamiliar or multi-file region dispatch the `explorer`
+  subagent — it runs this same serena+harness navigation read-only and returns a cited
+  reading list. It is the harness-native replacement for the built-in `Explore` agent;
+  prefer it for any code exploration.
+- Workflow playbooks (bugfix, feature, refactor, test, implement, commit) are served as
+  MCP prompts and via repo_prompt_get(name); the implement pipeline coordinates the
+  implementer/reviewer/test-runner subagents.
 - Run repo_verify_changed on the files you changed before declaring work done.
 - Shell is policy-bounded: destructive commands and secret-file reads are blocked; git
   push and database migrations need confirmation. Check repo_policy_check_command if unsure.
+- Connecting writes no harness files into the repo (serena keeps its symbol index under
+  `.serena/` on first navigation). Materialization is opt-in: call
+  repo_bootstrap to write agent/ (editable policies + health) and an AGENTS.md guide — for
+  per-repo customization or non-MCP clients (opencode/CI). If repo_context_overview's
+  `harness` block already reports harnessed=true with a guide, read it for repo-specific
+  overrides.
 """
 
 mcp = FastMCP("repo-agent-harness", instructions=_INSTRUCTIONS, lifespan=_lifespan)
@@ -289,10 +279,10 @@ def repo_prompt_get(
 def repo_bootstrap_status() -> dict:
     """Read-only inspection of which per-repo harness files are present.
 
-    The actual materialization happens via the ``repo_bootstrap`` tool (the
-    server also auto-bootstraps on connect), or the ``bootstrap``/``init`` CLI
-    subcommands for non-MCP clients. This tool is the read-only counterpart — so
-    the model can ask "is the harness installed here?" without writing.
+    Materialization is opt-in (the harness is zero-footprint on connect): it
+    happens via the ``repo_bootstrap`` tool or the ``bootstrap``/``init`` CLI
+    subcommands. This tool is the read-only counterpart — so the model can ask
+    "is the harness materialized here?" without writing.
 
     Returns a dict with ``ok``, ``root``, and ``present`` (mapping of
     file to bool: ``mcp_json``, ``agent_tree``, ``agents_md``,
@@ -319,7 +309,7 @@ def repo_bootstrap(
         str,
         Field(
             description="AGENTS.md handling: 'auto' (default — write/append the harness section), "
-            "'overwrite', or 'skip'. AGENTS.md is opt-out, so the default writes it."
+            "'overwrite', or 'skip'. When you materialize, the default writes the AGENTS.md guide."
         ),
     ] = "auto",
     pin: Annotated[
@@ -330,14 +320,14 @@ def repo_bootstrap(
     """Materialize the per-repo harness in the current repo — the action behind ``repo_bootstrap_status``.
 
     Writes the ``agent/`` tree (always), the ``AGENTS.md`` harness section (``agents_md``,
-    opt-out — default ``auto``), the opencode surface (when ``target`` includes opencode),
-    and — only with ``pin`` — a project-pinned ``.mcp.json`` for CI / non-Claude-Code
-    clients. Idempotent: re-running against a bootstrapped repo is a no-op.
+    default ``auto``), the opencode surface (when ``target`` includes opencode), and — only
+    with ``pin`` — a project-pinned ``.mcp.json`` for CI / non-Claude-Code clients.
+    Idempotent: re-running against a bootstrapped repo is a no-op.
 
-    Normally you do not call this by hand — the server auto-bootstraps the repo on connect.
-    It exists so ``/new-app`` and ``/harness-app`` can harness a freshly-created repo at
-    scaffold time (the connect-time auto-bootstrap ran before that repo existed), without
-    needing a path into the harness plugin.
+    Connecting is zero-footprint, so this is the opt-in lever that materializes harness
+    files when you want them — to edit per-repo policies/health, to give a non-MCP client
+    (opencode/CI) the ``agent/tools`` shims, or so ``/new-app`` / ``/harness-app`` can
+    harness a freshly-created repo at scaffold time.
 
     Returns the standard bootstrap result dict (``ok``, ``root``, ``created``, ``merged``,
     ``replaced``, ``skipped``, ``removed``, ``next_steps``), or a no-repo error.

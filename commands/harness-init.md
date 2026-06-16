@@ -8,11 +8,11 @@ Set up the **agent harness** in the current repository so a coding agent has saf
 deterministic, repo-aware tooling. The heavy lifting is done by the bundled harness CLI —
 do not copy files by hand.
 
-> **Normally you do not need this.** The harness server auto-bootstraps the repo on
-> connect, and the `repo_bootstrap` MCP tool materializes the harness on demand within a
-> session. This command is the explicit fallback for when the MCP server is unreachable
-> (CI, non-Claude-Code clients) or when you need to force-overwrite, change the target
-> surface, or refresh the opencode side.
+> **When you need this.** Connecting is zero-footprint — the server writes nothing into the
+> repo by default, and the `repo_bootstrap` MCP tool is the in-session way to materialize it.
+> Run this command when you want the on-disk harness without the MCP server: to edit per-repo
+> `agent/` policies/health, to support a non-Claude-Code client (CI, opencode), or to
+> force-overwrite, change the target surface, or refresh the opencode side.
 
 1. Confirm the working directory is inside a git repo: `git rev-parse --show-toplevel`.
 2. Run the bundled deterministic installer (it ships in this plugin — no network fetch).
