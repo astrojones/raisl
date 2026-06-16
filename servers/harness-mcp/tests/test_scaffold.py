@@ -65,7 +65,7 @@ def test_init_writes_mcp_json_with_single_server(repo):
     assert set(cfg["mcpServers"]) == {"repo-agent-harness"}, "serena is proxied through the harness now"
     args = cfg["mcpServers"]["repo-agent-harness"]["args"]
     spec = args[args.index("--from") + 1]
-    assert spec.startswith("git+https://github.com/astrojones/raisl")
+    assert spec.startswith("git+https://github.com/astrojones/astrojones")
     assert spec.endswith("#subdirectory=servers/harness-mcp")
     assert "__HARNESS_SPEC__" not in json.dumps(cfg)
 

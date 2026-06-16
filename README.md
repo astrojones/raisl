@@ -1,20 +1,20 @@
-# raisl
+# astrojones
 
 **The repo agent harness as a Claude Code plugin.** Install it once and every git repo you
 open is *born harnessed* — a coding agent gets safe, deterministic, repo-aware tooling and
 symbol-level code navigation, instead of improvising with raw shell.
 
-`raisl` is client-agnostic in spirit: the same harness server runs for Claude Code (bundled
+`astrojones` is client-agnostic in spirit: the same harness server runs for Claude Code (bundled
 here, auto-connecting) and — pinned into a repo's `.mcp.json` — for CI and other MCP clients.
 It is **generic**: nothing in it is tied to any one org. (The astrojones-specific deploy
 layer lives in the separate, private [`deploy`](https://github.com/astrojones/deploy) plugin,
-which builds on `raisl`.)
+which builds on `astrojones`.)
 
 ## Install
 
 ```bash
 /plugin marketplace add astrojones/claude-plugins
-/plugin install raisl@astrojones
+/plugin install astrojones@astrojones
 ```
 
 That's it. The harness MCP server is bundled and auto-connects at session start — no per-repo
@@ -28,9 +28,9 @@ setup.
 - **Serena, proxied** through the same server as `serena_*` tools for semantic symbol
   navigation and editing — find definitions, references, call sites; edit by symbol, not by
   line guesswork.
-- **Auto-bootstrap on connect** — opening a repo with `raisl` materializes the harness
+- **Auto-bootstrap on connect** — opening a repo with `astrojones` materializes the harness
   (`agent/` policies + tools, and the `AGENTS.md` harness section). **AGENTS.md is opt-out**:
-  drop a `.harness-no-agents-md` sentinel at the repo root to keep `raisl` from writing it.
+  drop a `.harness-no-agents-md` sentinel at the repo root to keep `astrojones` from writing it.
 - **Safety hooks** — a safe-shell + secret-read guard (PreToolUse) and a post-edit
   verification nudge (PostToolUse).
 - **Generic coding-workflow skills** — `bugfix`, `feature`, `refactor`, `test`, `implement`,
@@ -43,7 +43,7 @@ setup.
 
 | Path | When | Mechanism |
 |------|------|-----------|
-| **Auto** | You open an existing repo with `raisl` connected | The server bootstraps it on connect (idempotent; AGENTS.md opt-out). |
+| **Auto** | You open an existing repo with `astrojones` connected | The server bootstraps it on connect (idempotent; AGENTS.md opt-out). |
 | **In-session, explicit** | A freshly-created repo, or on demand | Call the **`repo_bootstrap`** MCP tool (optionally `path=...` to target another repo, `pin=...` for a project `.mcp.json`). |
 | **Fallback** | CI / non-Claude-Code clients, or the MCP server is unreachable | `/harness-init` runs the bundled CLI: `uv run --project "${CLAUDE_PLUGIN_ROOT}/servers/harness-mcp" repo-agent-harness bootstrap --target both`. |
 
@@ -74,7 +74,7 @@ uv run --project servers/harness-mcp pytest
 ## Local development
 
 ```bash
-claude --plugin-dir /path/to/raisl    # test before publishing
+claude --plugin-dir /path/to/astrojones    # test before publishing
 ```
 
 The plugin index lives in [`astrojones/claude-plugins`](https://github.com/astrojones/claude-plugins);

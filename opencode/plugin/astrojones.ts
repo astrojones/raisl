@@ -12,7 +12,7 @@ const PROMPTS_DIR = join(HARNESS_PROJECT, "repo_agent_harness", "prompts")
 const SKILLS_OUT = join(OPENCODE_DIR, "skills")
 
 // Org-only commands/agents/skills now live in the separate `deploy` plugin, so
-// raisl carries none of them. These exclusion sets stay (empty) as the guard:
+// astrojones carries none of them. These exclusion sets stay (empty) as the guard:
 // any future non-generic entry MUST be listed here (by `<name>.md`) so it can
 // never leak into the opencode skills/commands/agents tree via materialize*.
 const CLAUDE_ONLY_COMMANDS = new Set<string>([])
@@ -232,7 +232,7 @@ async function checkDrift(target: string): Promise<void> {
   const out = res.out as { drifted?: string[] }
   if (out.drifted && out.drifted.length > 0) {
     console.warn(
-      `[raisl] prompt drift detected for: ${out.drifted.join(
+      `[astrojones] prompt drift detected for: ${out.drifted.join(
         ", ",
       )}. Run \`repo-agent-harness sync-prompts\` to refresh.`,
     )
@@ -299,7 +299,7 @@ async function bootstrapOnce(target: string): Promise<void> {
     try {
       await materializeSkills()
     } catch (err) {
-      console.warn(`[raisl] materializeSkills failed: ${String(err)}`)
+      console.warn(`[astrojones] materializeSkills failed: ${String(err)}`)
     }
     try {
       const res = await runHarnessCli(
@@ -308,19 +308,19 @@ async function bootstrapOnce(target: string): Promise<void> {
       )
       if (!res.ok) {
         console.warn(
-          `[raisl] bootstrap returned non-zero: ${
+          `[astrojones] bootstrap returned non-zero: ${
             (res.out as BootstrapResult | null)?.error ?? res.stderr
           }`,
         )
       }
     } catch (err) {
-      console.warn(`[raisl] bootstrap failed: ${String(err)}`)
+      console.warn(`[astrojones] bootstrap failed: ${String(err)}`)
     }
     try {
       await rewriteOpencodeSkillsPath(target)
     } catch (err) {
       console.warn(
-        `[raisl] rewriteOpencodeSkillsPath failed: ${String(err)}`,
+        `[astrojones] rewriteOpencodeSkillsPath failed: ${String(err)}`,
       )
     }
     try {
@@ -328,7 +328,7 @@ async function bootstrapOnce(target: string): Promise<void> {
       await materializeAgents(target)
     } catch (err) {
       console.warn(
-        `[raisl] materializeCommands/Agents failed: ${String(err)}`,
+        `[astrojones] materializeCommands/Agents failed: ${String(err)}`,
       )
     }
     try {
@@ -363,7 +363,7 @@ export const AstrojonesDev: Plugin = async ({ worktree, directory }) => {
       // permission.ask hook can prompt interactively instead of hard-blocking.
       if (!decision.allowed) {
         throw new Error(
-          `[raisl] command blocked by policy: ${decision.reason}`,
+          `[astrojones] command blocked by policy: ${decision.reason}`,
         )
       }
       if (decision.requires_confirmation) {

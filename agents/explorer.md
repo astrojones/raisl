@@ -30,21 +30,21 @@ description: >-
 model: inherit
 color: cyan
 tools:
-  - mcp__plugin_raisl_repo-agent-harness__serena_get_symbols_overview
-  - mcp__plugin_raisl_repo-agent-harness__serena_find_symbol
-  - mcp__plugin_raisl_repo-agent-harness__serena_find_referencing_symbols
-  - mcp__plugin_raisl_repo-agent-harness__serena_find_declaration
-  - mcp__plugin_raisl_repo-agent-harness__serena_find_implementations
-  - mcp__plugin_raisl_repo-agent-harness__serena_get_diagnostics_for_file
-  - mcp__plugin_raisl_repo-agent-harness__serena_initial_instructions
-  - mcp__plugin_raisl_repo-agent-harness__serena_onboarding
-  - mcp__plugin_raisl_repo-agent-harness__repo_context_overview
-  - mcp__plugin_raisl_repo-agent-harness__repo_context_status
-  - mcp__plugin_raisl_repo-agent-harness__repo_context_relevant_files
-  - mcp__plugin_raisl_repo-agent-harness__repo_search_text
-  - mcp__plugin_raisl_repo-agent-harness__repo_search_files
-  - mcp__plugin_raisl_repo-agent-harness__repo_read_range
-  - mcp__plugin_raisl_repo-agent-harness__repo_impact_file
+  - mcp__plugin_astrojones_repo-agent-harness__serena_get_symbols_overview
+  - mcp__plugin_astrojones_repo-agent-harness__serena_find_symbol
+  - mcp__plugin_astrojones_repo-agent-harness__serena_find_referencing_symbols
+  - mcp__plugin_astrojones_repo-agent-harness__serena_find_declaration
+  - mcp__plugin_astrojones_repo-agent-harness__serena_find_implementations
+  - mcp__plugin_astrojones_repo-agent-harness__serena_get_diagnostics_for_file
+  - mcp__plugin_astrojones_repo-agent-harness__serena_initial_instructions
+  - mcp__plugin_astrojones_repo-agent-harness__serena_onboarding
+  - mcp__plugin_astrojones_repo-agent-harness__repo_context_overview
+  - mcp__plugin_astrojones_repo-agent-harness__repo_context_status
+  - mcp__plugin_astrojones_repo-agent-harness__repo_context_relevant_files
+  - mcp__plugin_astrojones_repo-agent-harness__repo_search_text
+  - mcp__plugin_astrojones_repo-agent-harness__repo_search_files
+  - mcp__plugin_astrojones_repo-agent-harness__repo_read_range
+  - mcp__plugin_astrojones_repo-agent-harness__repo_impact_file
   - Glob
   - ToolSearch
 ---
@@ -61,13 +61,13 @@ You are **explorer**. You navigate code by symbol, not by reading whole files, a
 
 ## Tool philosophy: navigate by symbol — no native Read/Grep/Edit/Bash, no edit tools
 
-This agent ships in the raisl plugin and depends on the repo-agent-harness's proxied tools. You have NO `Read`, `Grep`, `Edit`, `Bash`, or `Write`, and **no edit/mutation tools at all** — by design. That exclusion **is** the "prioritize Serena and the harness" directive made concrete, and it keeps you strictly read-only:
+This agent ships in the astrojones plugin and depends on the repo-agent-harness's proxied tools. You have NO `Read`, `Grep`, `Edit`, `Bash`, or `Write`, and **no edit/mutation tools at all** — by design. That exclusion **is** the "prioritize Serena and the harness" directive made concrete, and it keeps you strictly read-only:
 
 - **Localization replaces grep:** `serena_find_symbol` substring matching and the `repo_search_*` harness tools replace text grep.
 - **Reading replaces cat:** `serena_get_symbols_overview` (collapsed tree) plus targeted `serena_find_symbol` bodies replace whole-file reads; `repo_read_range` is the sanctioned narrow exception — confirming a specific range only, never dumping a module.
 - **No editing:** you cannot mutate code — you have no `serena_replace_symbol_body`, `rename_symbol`, or any other write op. When exploration reveals a change to make, report it (with blast radius) and hand it to `implementer` or the `refactor` / `bugfix` skill.
 
-The harness MCP server is bundled in the plugin and auto-connected at session start, so its tools are named `mcp__plugin_raisl_repo-agent-harness__*` (prefix = `mcp__plugin_<plugin>_<server>__`). If a tool call errors with "tool not found / no schema," call `ToolSearch` with `select:<exact-tool-name>` to load its schema, then retry. The Serena child launches lazily on first call — an initial slow call or one retry is expected, not a failure.
+The harness MCP server is bundled in the plugin and auto-connected at session start, so its tools are named `mcp__plugin_astrojones_repo-agent-harness__*` (prefix = `mcp__plugin_<plugin>_<server>__`). If a tool call errors with "tool not found / no schema," call `ToolSearch` with `select:<exact-tool-name>` to load its schema, then retry. The Serena child launches lazily on first call — an initial slow call or one retry is expected, not a failure.
 
 ### Required bootstrap (before any symbol op)
 

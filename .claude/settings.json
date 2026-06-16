@@ -8,6 +8,6 @@
     }
   },
   "enabledPlugins": {
-    "raisl@astrojones": true
+    "astrojones@astrojones": true
   }
 }

@@ -25,7 +25,7 @@ _EVENT = "pre-tool-use"
 _GIT_TIMEOUT = 2
 _TIMEOUT = 7  # with git's 2s this stays under the 10s budget in hooks.json
 _SPEC_RE = re.compile(
-    r"^git\+https://github\.com/astrojones/raisl"
+    r"^git\+https://github\.com/astrojones/astrojones"
     r"@[0-9a-f]{40}#subdirectory=servers/harness-mcp$"
 )
 

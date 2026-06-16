@@ -1,6 +1,6 @@
-# raisl — opencode plugin
+# astrojones — opencode plugin
 
-The opencode half of the dual-target `raisl` harness plugin. Mirrors what the
+The opencode half of the dual-target `astrojones` harness plugin. Mirrors what the
 Claude Code half does, except: opencode does not auto-load `.claude/`, so this
 plugin **materializes** the per-assistant surfaces (skills, commands, agents)
 into the locations opencode reads from.
@@ -13,7 +13,7 @@ truth; this plugin derives the opencode surfaces from them on load.
 ### From npm (not yet published)
 
 > The package is **not yet published** to npm. The name below matches
-> `package.json` (`raisl-opencode`); use the local-clone method until a release
+> `package.json` (`astrojones-opencode`); use the local-clone method until a release
 > is cut.
 
 Add to `~/.config/opencode/opencode.json` (global) or `./opencode.json` (project):
@@ -21,7 +21,7 @@ Add to `~/.config/opencode/opencode.json` (global) or `./opencode.json` (project
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["raisl-opencode"]
+  "plugin": ["astrojones-opencode"]
 }
 ```
 
@@ -34,8 +34,8 @@ Symlink the plugin file into opencode's global plugin directory:
 
 ```bash
 mkdir -p ~/.config/opencode/plugins
-ln -s "$(pwd)/opencode/plugin/raisl.ts" \
-      ~/.config/opencode/plugins/raisl.ts
+ln -s "$(pwd)/opencode/plugin/astrojones.ts" \
+      ~/.config/opencode/plugins/astrojones.ts
 ```
 
 Then add the harness MCP server to your `~/.config/opencode/opencode.json`:
@@ -48,7 +48,7 @@ Then add the harness MCP server to your `~/.config/opencode/opencode.json`:
       "type": "local",
       "command": [
         "uv", "run", "--project",
-        "<path-to-raisl>/servers/harness-mcp",
+        "<path-to-astrojones>/servers/harness-mcp",
         "repo-agent-harness-mcp"
       ],
       "enabled": true
@@ -68,11 +68,11 @@ Then add the harness MCP server to your `~/.config/opencode/opencode.json`:
    frontmatter (`name`, `description`, `compatibility`, `metadata`).
 3. **`skills.paths` rewrite** — replaces the `<set-by-opencode-plugin>` sentinel
    in `.opencode/opencode.json` with the real path to `<plugin>/opencode/skills/`.
-4. **Commands + agents translation** — copies raisl's commands and agents into
+4. **Commands + agents translation** — copies astrojones's commands and agents into
    `.opencode/commands/` and `.opencode/agents/`, stripping Claude-only
-   frontmatter keys (`color`, `allowed-tools`, `argument-hint`). raisl carries
+   frontmatter keys (`color`, `allowed-tools`, `argument-hint`). astrojones carries
    only generic surfaces, so nothing is filtered (the exclusion sets in
-   `plugin/raisl.ts` are empty guards for the future).
+   `plugin/astrojones.ts` are empty guards for the future).
 5. **Drift check** — calls `repo-agent-harness drift-check`; if any plugin-shipped
    `skills/<name>/SKILL.md` has diverged from the harness body, logs a
    `console.warn` listing the drifted prompts. **Never blocks**, never errors.
@@ -92,10 +92,10 @@ and the built-in destructive-command fallback regex blocks the obvious nukes
 
 ## Scope
 
-raisl is the **generic** harness — it ships only assistant-agnostic coding
+astrojones is the **generic** harness — it ships only assistant-agnostic coding
 surfaces. The astrojones org deploy layer (`nuklaut-deploy`, `deploy-doctor`,
 `/new-app`, `/harness-app`) lives in the separate, private
-[`deploy`](https://github.com/astrojones/deploy) plugin and is not part of raisl
+[`deploy`](https://github.com/astrojones/deploy) plugin and is not part of astrojones
 on either the Claude Code or the opencode side.
 
 ## How the two halves fit together
@@ -111,7 +111,7 @@ on either the Claude Code or the opencode side.
             ┌──────────┴──────────┐
             │                     │
   Claude Code half         opencode half
-   • skills/<name>/SKILL.md  • opencode/plugin/raisl.ts
+   • skills/<name>/SKILL.md  • opencode/plugin/astrojones.ts
      (offline copy, drift-     (Plugin factory)
       checked)                • opencode/opencode.json
    • commands/harness-init.md   (plugin manifest)

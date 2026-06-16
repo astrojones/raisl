@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 SECTION_BEGIN = "<!-- repo-agent-harness:section:begin -->"
 SECTION_END = "<!-- repo-agent-harness:section:end -->"
 
-_REPO_URL = "https://github.com/astrojones/raisl"
+_REPO_URL = "https://github.com/astrojones/astrojones"
 _PLACEHOLDER_NAME = "__REPO_NAME__"
 _PLACEHOLDER_SPEC = "__HARNESS_SPEC__"
 

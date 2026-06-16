@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+* **rename:** the plugin was renamed from `raisl` to `astrojones`. The MCP tool prefix is now `mcp__plugin_astrojones_repo-agent-harness__` (was `mcp__plugin_raisl_repo-agent-harness__`), the install ref is `astrojones@astrojones` (was `raisl@astrojones`), and the command namespace is `/astrojones:` (was `/raisl:`). The GitHub repo moved to `astrojones/astrojones` (was `astrojones/raisl`). The MCP server name `repo-agent-harness` and the Python package `repo_agent_harness` are unchanged.
+
 ## [1.2.0](https://github.com/astrojones/raisl/compare/v1.1.0...v1.2.0) (2026-06-14)
 
 

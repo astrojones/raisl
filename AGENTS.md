@@ -1,4 +1,4 @@
-# Agent guide — raisl
+# Agent guide — astrojones
 
 <!-- repo-agent-harness:section:begin -->
 ## Working in this repo (repo-agent-harness)
