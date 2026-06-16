@@ -30,7 +30,7 @@ repo-agent-harness-mcp = "repo_agent_harness.server:main"
 repo-agent-harness = "repo_agent_harness.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "pytest-cov>=5.0", "ruff>=0.9", "ty>=0.0.29"]
+dev = ["pytest>=8.3", "pytest-cov>=5.0", "pytest-timeout>=2.3", "ruff>=0.9", "ty>=0.0.29"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -184,6 +184,9 @@ minversion = "8.0"
 testpaths = ["tests"]
 addopts = ["-v", "--strict-markers", "--cov=repo_agent_harness", "--cov-report=term-missing"]
 filterwarnings = ["error::DeprecationWarning"]
+# Registered so --strict-markers accepts it even when pytest-timeout is not loaded
+# (then it is a no-op); the plugin enforces the wall-clock backstop in dev/CI.
+markers = ["timeout: per-test wall-clock backstop for concurrency/hang tests"]
 
 [tool.coverage.run]
 source = ["repo_agent_harness"]
