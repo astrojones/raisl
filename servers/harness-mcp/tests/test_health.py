@@ -1,9 +1,15 @@
 """Tests for the declarative repo-health subsystem (health.py)."""
 
+import itertools
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 from repo_agent_harness import health, shell
+from repo_agent_harness.models import CheckResult
 from repo_agent_harness.paths import repo_id
 
 CHEAP_CONFIG = """\
@@ -223,3 +229,50 @@ def test_cli_health_subcommand(repo, monkeypatch, capsys, isolated_harness_home)
     assert code == 0
     assert out["ok"] is True
     assert out["checks"][0]["id"] == "worktree"
+
+
+# ------------------------------------------------------------------- concurrency
+
+
+@pytest.mark.timeout(30)
+def test_concurrent_run_executes_checks_once(repo, monkeypatch):
+    """Concurrent run() callers must share one check-suite pass, not stampede it."""
+    health._CACHE.clear()
+    health._CACHE_LOCKS.clear()
+    expected = len([c for c in health.load_config(str(repo)).checks if c.enabled])
+    assert expected >= 1, "the default config must enable at least one check"
+
+    counter = itertools.count()
+    seen = threading.Lock()
+    runs = []
+
+    def slow_check(_root, cfg, _gateway):
+        with seen:
+            runs.append(next(counter))
+        time.sleep(0.05)  # widen the race window so siblings overlap
+        return CheckResult(id=cfg.id, kind=cfg.kind)
+
+    monkeypatch.setattr(health, "_run_check", slow_check)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        snapshots = [f.result() for f in [pool.submit(health.run, str(repo)) for _ in range(8)]]
+
+    assert len(runs) == expected, "the check suite must run exactly once across all callers"
+    assert all(s.ok is True for s in snapshots)
+    assert len({s.ok for s in snapshots}) == 1
+
+
+def test_invalidate_does_not_deadlock_with_run(repo, monkeypatch):
+    """invalidate() stays lock-free, so interleaving it with run() never deadlocks."""
+    health._CACHE.clear()
+    health._CACHE_LOCKS.clear()
+
+    def quick_check(_root, cfg, _gateway):
+        health.invalidate(str(repo))  # interleave invalidation from the locked section
+        return CheckResult(id=cfg.id, kind=cfg.kind)
+
+    monkeypatch.setattr(health, "_run_check", quick_check)
+    health.run(str(repo))  # populate the cache so invalidate has an entry to flip
+    snap = health.run(str(repo))  # second pass interleaves invalidate without deadlocking
+    assert snap is not None
+    assert snap.ok is True

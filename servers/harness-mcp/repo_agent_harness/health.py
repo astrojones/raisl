@@ -27,6 +27,9 @@ try:
 except ImportError:  # keep the package importable in minimal (hook) environments
     yaml = None
 
+
+import threading
+
 from repo_agent_harness import git, policies, shell, verify
 from repo_agent_harness.models import CheckResult, HealthCheckConfig, HealthConfig, HealthSnapshot
 
@@ -259,6 +262,20 @@ class _CacheEntry:
 _CACHE: dict[str, _CacheEntry] = {}
 
 
+_CACHE_LOCKS: dict[str, threading.Lock] = {}
+_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _lock_for(root: str) -> threading.Lock:
+    """Return the per-root cache lock, creating it once under the meta-lock."""
+    with _CACHE_LOCKS_GUARD:
+        lock = _CACHE_LOCKS.get(root)
+        if lock is None:
+            lock = threading.Lock()
+            _CACHE_LOCKS[root] = lock
+        return lock
+
+
 def _status_hash(root: str) -> str:
     res = shell.run(["git", "status", "--porcelain"], cwd=root, timeout=15)
     return hashlib.sha256(res.stdout.encode("utf-8")).hexdigest()
@@ -296,6 +313,33 @@ def _fresh_cache_hit(root: str, refresh: bool, only: str | None) -> HealthSnapsh
     return entry.snapshot.model_copy(update={"provenance": "cache", "stale": False})
 
 
+def _compute_snapshot(
+    root: str,
+    only: str | None,
+    gateway: DiagnosticsGateway | None,
+) -> HealthSnapshot:
+    """Run the selected checks and cache the snapshot (caller holds the per-root lock)."""
+    status_hash = _status_hash(root)
+    cfg = load_config(root)
+    selected = [c for c in cfg.checks if c.enabled and (only is None or c.id == only)]
+    if only is not None and not selected:
+        known = ", ".join(c.id for c in cfg.checks)
+        results = [CheckResult(id=only, kind="unknown", skipped=True, summary=f"no such check id; known: {known}")]
+    else:
+        results = [_run_check(root, c, gateway) for c in selected]
+    snapshot = HealthSnapshot(
+        ok=not any(r.ok is False for r in results),
+        checks=results,
+        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        git_head=git.head(root),
+        provenance="fresh",
+        config_error=cfg.config_error,
+    )
+    if only is None:
+        _CACHE[root] = _CacheEntry(snapshot=snapshot, status_hash=status_hash, monotonic=time.monotonic())
+    return snapshot
+
+
 def run(
     root: str,
     *,
@@ -317,22 +361,10 @@ def run(
     hit = _fresh_cache_hit(root, refresh, only)
     if hit is not None:
         return hit
-    status_hash = _status_hash(root)
-    cfg = load_config(root)
-    selected = [c for c in cfg.checks if c.enabled and (only is None or c.id == only)]
-    if only is not None and not selected:
-        known = ", ".join(c.id for c in cfg.checks)
-        results = [CheckResult(id=only, kind="unknown", skipped=True, summary=f"no such check id; known: {known}")]
-    else:
-        results = [_run_check(root, c, gateway) for c in selected]
-    snapshot = HealthSnapshot(
-        ok=not any(r.ok is False for r in results),
-        checks=results,
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        git_head=git.head(root),
-        provenance="fresh",
-        config_error=cfg.config_error,
-    )
-    if only is None:
-        _CACHE[root] = _CacheEntry(snapshot=snapshot, status_hash=status_hash, monotonic=time.monotonic())
-    return snapshot
+    with _lock_for(root):
+        # Double-check under the lock: a sibling caller may have filled the cache
+        # while we waited, so we must not relaunch the (expensive) check suite.
+        hit = _fresh_cache_hit(root, refresh, only)
+        if hit is not None:
+            return hit
+        return _compute_snapshot(root, only, gateway)
