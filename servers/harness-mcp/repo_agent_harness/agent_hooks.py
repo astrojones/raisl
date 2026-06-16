@@ -1,13 +1,18 @@
 """Claude Code hook handlers, exposed via ``repo-agent-harness hook <event>``.
 
 Pure functions: take the hook event payload, return the hook JSON response
-(empty dict = allow / no output). The CLI wrapper owns stdin/stdout and
-fail-open behavior, so a hook problem never blocks legitimate work.
+(empty dict = allow / no output). The CLI wrapper (``repo-agent-harness hook``)
+or the lightweight ``main`` below — invoked as ``python -m
+repo_agent_harness.agent_hooks <event>`` by the plugin hook to skip the heavy
+CLI import — owns stdin/stdout and fail-open behavior, so a hook problem never
+blocks legitimate work.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 from pathlib import Path
 
 from repo_agent_harness import git, policies, secrets
@@ -124,3 +129,26 @@ def post_tool_use(data: dict) -> dict:
             }
         }
     return {}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Lightweight hook entry: ``python -m repo_agent_harness.agent_hooks <event>``.
+
+    The plugin's PreToolUse shim calls this instead of ``repo-agent-harness hook`` so it imports
+    only this module (and git/policies/secrets), not the full CLI graph (gateway, health, verify,
+    …) — ~40ms vs ~600ms per tool call. Reads the event JSON on stdin, prints the decision JSON.
+    Fail-open by contract: any error prints an empty response and exits 0.
+    """
+    args = sys.argv[1:] if argv is None else argv
+    event = args[0] if args else "pre-tool-use"
+    try:
+        data = json.load(sys.stdin)
+        out = pre_tool_use(data) if event == "pre-tool-use" else post_tool_use(data)
+    except Exception:  # noqa: BLE001 — fail-open contract: any error must yield an empty allow
+        out = {}
+    print(json.dumps(out))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
