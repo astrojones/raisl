@@ -32,18 +32,19 @@ writer of the plan file.**
 Call `EnterPlanMode`. Parse the task (read the task file / fetch the issue / take the inline
 description). Orient once with `repo_context_overview` (languages, entrypoints, important paths).
 
-### 1. Explore (breadth, then depth) — dispatch `explorer`
-Dispatch the **`explorer`** subagent to map the blast radius:
-- **Scout** for an unfamiliar region → a focused reading list of the relevant files and symbols.
-- **Explore (depth)** for "how does X work / what breaks if I change it" → a cited data-flow answer.
-Run `repo_impact_file` on the likely targets yourself for a quick blast-radius read. The explorer
-returns conclusions with `path:line` citations — it does not dump files into this context.
+### 1. Map the symbols — dispatch `explorer`
+Dispatch the **`explorer`** subagent to map the relevant symbols and the blast radius — a focused
+reading list of the files and symbols a change would touch, plus who references the pivot symbols.
+It returns a cited symbol map (`path:line`); it does **not** read bodies deeply, trace full data
+flows, or design — that depth is the architect's. It does not dump files into this context.
 
 ### 2. Design — dispatch `architect`
-Dispatch the read-only **`architect`** subagent with the task and the explorer's findings. It
-returns a cited plan: critical files & symbols, the contract/data shape (for a product surface),
-the sequenced steps or disjoint streams, the architectural trade-offs, and the blast radius. The
-architect writes nothing and never calls `ExitPlanMode`.
+Dispatch the read-only **`architect`** subagent with the task and the explorer's symbol map. The
+architect **reads the relevant symbol bodies deeply** (the deep read explorer leaves to it) and
+**returns** a cited plan: critical files & symbols, the contract/data shape (for a product
+surface), the sequenced steps or disjoint streams, the architectural trade-offs, and the blast
+radius (extended from the explorer's map). The architect writes nothing — it returns the plan to
+this skill — and never calls `ExitPlanMode`.
 
 ### 3. Resolve forks — `AskUserQuestion`
 If the architect surfaced genuine forks (an either/or the task doesn't settle, a trade-off only the

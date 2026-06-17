@@ -69,7 +69,7 @@ phase. Resolve all paths from the working root — never hardcode absolutes.
 
 ### 0.2 Blast radius
 
-Dispatch the **`explorer`** subagent in scout/breadth mode to map the relevant files and
+Dispatch the **`explorer`** subagent to map the relevant files and
 symbols (a focused reading list for the blast radius), and run `repo_impact_file` on the
 likely targets. Know what you're about to touch — especially for auth, schema/migration, or
 exported-symbol changes.
