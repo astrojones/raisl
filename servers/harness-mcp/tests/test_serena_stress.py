@@ -1,0 +1,175 @@
+"""Stress / regression tests for the shared Serena session under parallel-subagent load.
+
+The reported flakiness — "the plugin is flaky when several parallel subagents use Serena,
+especially with TypeScript" — has a concrete suspect in :mod:`repo_agent_harness.gateway`:
+all subagents in a Claude Code session route through ONE harness process, ONE
+``SerenaGateway``, ONE persistent MCP session, ONE child Serena. ``SerenaGateway.call``
+invalidates that *shared* session (closing the child + every language server) on ANY
+single call's timeout or exception. With concurrent callers, one slow/aborted call tears
+the session out from under its siblings — exactly an intermittent, load-dependent failure.
+
+These tests force that interleaving *deterministically* (a flaky test for flakiness is
+useless as a release gate) using the LSP-free fake Serena, so the race is exercised by
+construction, not by luck. They are expected to FAIL on a gateway that tears the shared
+session down on a single call's failure, and to pass once teardown is scoped to genuine
+transport death. Each test carries a hard ``timeout`` so a regression fails loudly.
+"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+import pytest
+from fastmcp.client.transports import StdioTransport
+from repo_agent_harness import gateway
+
+pytestmark = pytest.mark.anyio
+
+FAKE = Path(__file__).parent / "fake_serena.py"
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+def _fake_gateway(repo: Path) -> gateway.SerenaGateway:
+    """A gateway whose child is the LSP-free fake Serena (stdio, kept alive across calls)."""
+    transport = StdioTransport(command=sys.executable, args=[str(FAKE)], cwd=str(repo), keep_alive=True)
+    return gateway.SerenaGateway(str(repo), transport=transport)
+
+
+async def _echo(result) -> str | None:
+    """Pull the echoed marker out of a fake-Serena CallToolResult."""
+    return (result.structuredContent or {}).get("echo")
+
+
+@pytest.mark.timeout(30)
+async def test_sibling_survives_a_concurrent_calls_timeout(repo, monkeypatch):
+    """A sibling serena call must survive a *concurrent* call timing out on the shared session.
+
+    Timeline (per-call timeout = 0.5s, one shared healthy child):
+      t=0.00  victim starts ``hang`` (blocks forever)
+      t=0.30  sibling starts ``slow(0.3)`` — its own deadline is t=0.80
+      t=0.50  victim hits its timeout → gateway invalidates → closes the SHARED child
+      t=0.60  sibling's reply was due — but the child it was talking to is gone
+
+    On the current gateway the sibling dies with a transport error because the timeout of an
+    *unrelated* call killed the child it shared. The healthy child should have answered it.
+    """
+    monkeypatch.setenv(gateway.SERENA_TIMEOUT_ENV, "0.5")
+    gw = _fake_gateway(repo)
+    try:
+        # Warm the session so victim and sibling provably share one already-open child.
+        await gw.call("find_symbol", {"name_path": "warm"})
+
+        async def victim() -> None:
+            with pytest.raises(TimeoutError, match="timed out"):
+                await gw.call("hang", {})
+
+        async def sibling():
+            await asyncio.sleep(0.3)  # still in flight when the victim tears down at 0.5s
+            return await gw.call("slow", {"seconds": 0.3, "marker": "alive"})
+
+        _, result = await asyncio.gather(victim(), sibling())
+        assert await _echo(result) == "alive", "a concurrent call's timeout killed the shared session"
+    finally:
+        await gw.aclose()
+
+
+@pytest.mark.timeout(30)
+async def test_sibling_survives_a_concurrent_calls_cancellation(repo, monkeypatch):
+    """A sibling serena call must survive a *concurrent* call being cancelled mid-flight.
+
+    Cancellation is the most frequent real-world trigger: a subagent finishes (or the
+    orchestrator cancels it) while its serena call is in flight. The original gateway tore the
+    shared session down on *any* exception — cancellation included — killing the healthy child
+    out from under siblings. The child is fine; only one *caller* went away, so the gateway must
+    leave the session intact and the sibling must still get its answer.
+    """
+    monkeypatch.setenv(gateway.SERENA_TIMEOUT_ENV, "30")  # high: not exercising timeout here
+    gw = _fake_gateway(repo)
+    try:
+        await gw.call("find_symbol", {"name_path": "warm"})
+
+        sibling_task = asyncio.create_task(gw.call("slow", {"seconds": 0.6, "marker": "alive"}))
+        victim_task = asyncio.create_task(gw.call("slow", {"seconds": 5.0, "marker": "victim"}))
+        await asyncio.sleep(0.2)  # both provably in flight on the shared child
+        victim_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await victim_task
+
+        result = await sibling_task
+        assert await _echo(result) == "alive", "a concurrent call's cancellation killed the shared session"
+    finally:
+        await gw.aclose()
+
+
+@pytest.mark.timeout(45)
+async def test_wedged_child_recovers_after_consecutive_timeouts(repo, monkeypatch):
+    """A child wedged so that EVERY call times out is respawned — recovery is not lost.
+
+    The dangerous half of the teardown fix: declining to close the shared child on a *single*
+    timeout must not also remove recovery from a genuinely hung language server — a real
+    ``tsserver`` failure mode where the connection stays open but requests are never answered
+    (so ``is_connected()`` keeps reporting it alive). After ``_WEDGE_TIMEOUTS`` consecutive
+    timeouts with no success the gateway must reap and respawn; the fresh child (a new process
+    with the wedge flag unset) answers again. Without the consecutive-timeout counter this
+    would time out forever — strictly worse than the flakiness being fixed.
+    """
+    monkeypatch.setenv(gateway.SERENA_TIMEOUT_ENV, "0.5")
+    gw = _fake_gateway(repo)
+    try:
+        assert await _echo(await gw.call("find_symbol", {"name_path": "warm"})) == "warm"
+        await gw.call("wedge", {})  # this child now hangs on every find_symbol/slow
+
+        for _ in range(gateway._WEDGE_TIMEOUTS):
+            with pytest.raises(TimeoutError):
+                await gw.call("find_symbol", {"name_path": "wedged"})
+
+        # The consecutive timeouts reaped the wedged child; the next call respawns a fresh one.
+        result = await gw.call("find_symbol", {"name_path": "recovered"})
+        assert await _echo(result) == "recovered", "wedged child was never respawned — recovery lost"
+    finally:
+        await gw.aclose()
+
+
+@pytest.mark.timeout(90)
+async def test_intermittent_timeouts_do_not_disturb_concurrent_healthy_calls(repo, monkeypatch):
+    """Timeouts interleaved with healthy concurrent calls disturb neither, across many rounds.
+
+    Post-fix a timeout no longer tears the shared session down, so this guards two things at
+    once: (1) a timed-out call never breaks the healthy calls overlapping it on the shared
+    session, and (2) timeouts interleaved with successes never trip the wedge-recovery reaper —
+    each success resets the consecutive-timeout counter, so healthy traffic is never reaped out
+    from under itself. Each round the healthy ``slow`` calls start *after* the victim so they
+    provably overlap its 0.5s timeout window (instant calls would finish first and prove
+    nothing). Across all rounds every healthy call must return its own correct answer.
+    """
+    monkeypatch.setenv(gateway.SERENA_TIMEOUT_ENV, "0.5")
+    gw = _fake_gateway(repo)
+    rounds, healthy_per_round = 8, 4
+    try:
+        await gw.call("find_symbol", {"name_path": "warm"})
+        failures: list[str] = []
+        for r in range(rounds):
+
+            async def healthy(tag: str):
+                await asyncio.sleep(0.2)  # in flight when the victim tears down at 0.5s
+                try:
+                    res = await gw.call("slow", {"seconds": 0.3, "marker": tag})
+                    if (res.structuredContent or {}).get("echo") != tag:
+                        failures.append(f"wrong echo for {tag}")
+                except Exception as exc:  # noqa: BLE001 — record, don't abort the round
+                    failures.append(f"{tag}: {exc!r}")
+
+            async def timer():
+                with pytest.raises(TimeoutError):
+                    await gw.call("hang", {})
+
+            tags = [f"r{r}-{i}" for i in range(healthy_per_round)]
+            await asyncio.gather(timer(), *(healthy(t) for t in tags))
+
+        assert not failures, f"{len(failures)} healthy calls failed under churn: {failures[:5]}"
+    finally:
+        await gw.aclose()

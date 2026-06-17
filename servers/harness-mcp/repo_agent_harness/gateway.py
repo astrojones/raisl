@@ -204,6 +204,14 @@ def _stale_serena_procs(ours: str, root_resolved: str) -> list[psutil.Process]:
     return victims
 
 
+# Consecutive per-call timeouts (with no intervening success) after which the shared Serena
+# child is treated as wedged and respawned, even while it still reports connected. ``is_connected``
+# lags a dead child, and a hung language server can hold the connection open yet never answer, so
+# without this a wedged child would time out every call forever; with it, recovery is restored
+# without letting a single slow call tear the session out from concurrent siblings.
+_WEDGE_TIMEOUTS = 3
+
+
 class SerenaGateway:
     """Lazy, crash-tolerant MCP client owning the child Serena process for one repo.
 
@@ -227,6 +235,7 @@ class SerenaGateway:
         self._injected_transport = transport
         self._client: Client | None = None
         self._lock = anyio.Lock()
+        self._consecutive_timeouts = 0
         self.root: str | None = root if isinstance(root, str) else None
 
     def _ensure_client(self) -> Client:
@@ -291,17 +300,39 @@ class SerenaGateway:
             with suppress(Exception):
                 await old.close()
 
-    async def _invalidate(self) -> None:
-        """Drop a failed session so the next call respawns Serena (crash/timeout recovery)."""
+    async def _reap_if_current(self, client: Client) -> None:
+        """Discard the shared session iff it is still the one ``client`` refers to.
+
+        Gating on identity means a burst of callers that all fail on the same dead/wedged child
+        respawns it exactly once: the first reaper discards it; a later reaper whose ``client``
+        no longer matches ``self._client`` (someone already reconnected) is a no-op, so the
+        freshly spawned child is never thrashed. The next :meth:`_connected_client` reconnects.
+        """
         async with self._lock:
-            await self._discard_locked()
+            if self._client is client:
+                await self._discard_locked()
+                self._consecutive_timeouts = 0
 
     async def call(self, name: str, arguments: dict) -> types.CallToolResult:
         """Forward one tool call to Serena over the persistent session (launched on first use).
 
         The forwarded call is bounded by :func:`serena_timeout` so a hung or slow
-        language-server call cannot block the harness indefinitely; on timeout or transport
-        failure the session is invalidated so the next call reconnects a fresh child.
+        language-server call cannot block the harness indefinitely.
+
+        The session is **shared** by every concurrent caller (all subagents route through one
+        gateway, one child Serena), so teardown is scoped by *why* the call ended:
+
+        - **Timeout** — the child is alive but slow, and sibling calls share the session, so a
+          single timeout must not close it (that was the parallel-subagent flakiness: one slow
+          TypeScript query tripping the timeout killed every concurrent agent). A child wedged
+          so that *every* call times out is still recovered: :meth:`_reap_if_wedged` respawns it
+          after :data:`_WEDGE_TIMEOUTS` consecutive timeouts with no intervening success.
+        - **Cancellation** — a caller went away (a subagent finished or was cancelled); that
+          says nothing about the child's health, so never tear the shared session down.
+        - **Any other error** — a genuine transport failure (the child crashed); respawn it.
+
+        Both reap paths are gated on client identity (:meth:`_reap_if_current`), so a burst of
+        callers failing on one dead/wedged child respawns it once, not once per caller.
 
         Raises:
             TimeoutError: If Serena does not respond within the timeout.
@@ -309,14 +340,33 @@ class SerenaGateway:
         client = await self._connected_client()
         try:
             with anyio.fail_after(serena_timeout()):
-                return await client.call_tool_mcp(name, arguments)
+                result = await client.call_tool_mcp(name, arguments)
         except TimeoutError:
-            await self._invalidate()
+            await self._reap_if_wedged(client)
             msg = f"serena call {name!r} timed out after {serena_timeout()}s"
             raise TimeoutError(msg) from None
-        except BaseException:
-            await self._invalidate()
+        except anyio.get_cancelled_exc_class():
             raise
+        except BaseException:
+            await self._reap_if_current(client)
+            raise
+        else:
+            self._consecutive_timeouts = 0
+            return result
+
+    async def _reap_if_wedged(self, client: Client) -> None:
+        """Respawn the shared session when a *single* slow call is not the whole story.
+
+        One timeout leaves a healthy-but-slow child in place for its concurrent siblings. But
+        ``is_connected()`` can report a dead child as alive, and a wedged language server can
+        accept the connection yet never answer — so a child is also reaped after
+        :data:`_WEDGE_TIMEOUTS` consecutive timeouts with no intervening success, restoring
+        recovery without letting one slow call disturb siblings. The counter is reset by any
+        successful :meth:`call` and inside :meth:`_reap_if_current` on respawn.
+        """
+        self._consecutive_timeouts += 1
+        if self._consecutive_timeouts >= _WEDGE_TIMEOUTS or not client.is_connected():
+            await self._reap_if_current(client)
 
     def call_from_thread(self, name: str, arguments: dict) -> types.CallToolResult:
         """Sync facade for callers running in a worker thread (e.g. health checks)."""

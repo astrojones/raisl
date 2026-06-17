@@ -11,6 +11,8 @@ mcp = FastMCP("fake-serena")
 @mcp.tool()
 def find_symbol(name_path: str) -> dict:
     """Echo the requested symbol path (``result`` mirrors the real Serena output contract)."""
+    if _wedged:
+        time.sleep(3600)
     return {"echo": name_path, "result": name_path}
 
 
@@ -54,8 +56,25 @@ def hang() -> str:
 @mcp.tool()
 def slow(seconds: float, marker: str = "slow") -> dict:
     """Sleep a finite ``seconds`` then echo ``marker`` (finite late-response test)."""
+    if _wedged:
+        time.sleep(3600)
     time.sleep(seconds)
     return {"echo": marker}
+
+
+_wedged = False
+
+
+@mcp.tool()
+def wedge() -> str:
+    """Wedge this child: every later ``find_symbol``/``slow`` blocks forever (a hung LSP).
+
+    The flag is process-global, so the gateway can only escape by respawning a fresh child —
+    exactly what the wedge-recovery test asserts after ``_WEDGE_TIMEOUTS`` consecutive timeouts.
+    """
+    global _wedged  # noqa: PLW0603 — a process-global flag is the point: only a respawn clears it
+    _wedged = True
+    return "wedged"
 
 
 if __name__ == "__main__":
