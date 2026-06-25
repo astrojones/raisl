@@ -1,6 +1,8 @@
+import os
 import pathlib
+import subprocess
 
-from repo_agent_harness import git
+from repo_agent_harness import git, paths
 
 
 def test_repo_root(repo):
@@ -44,7 +46,6 @@ def test_repo_root_ignores_claude_project_dir_when_cwd_explicit(monkeypatch, rep
 def test_repo_root_falls_back_to_process_cwd_when_env_unset(monkeypatch, repo):
     """With no env var and no cwd, falls back to process cwd (shell.run default)."""
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
-    import os
 
     original = pathlib.Path.cwd()
     try:
@@ -53,3 +54,35 @@ def test_repo_root_falls_back_to_process_cwd_when_env_unset(monkeypatch, repo):
         assert result == str(repo)
     finally:
         os.chdir(original)
+
+
+def test_repo_root_resolves_linked_worktree(repo, tmp_path):
+    """Linked-worktree repo_root() returns the worktree root, not the main checkout (#28)."""
+    wt = tmp_path / "linked-wt"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt), "-b", "wt-branch"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    # In a linked worktree, .git is a file pointing at the main repo's worktrees dir.
+    assert (wt / ".git").is_file()
+
+    result = git.repo_root(cwd=str(wt))
+    assert result is not None
+    assert os.path.realpath(result) == os.path.realpath(str(wt))
+    assert os.path.realpath(result) != os.path.realpath(str(repo))
+
+
+def test_repo_id_differs_per_worktree(repo, tmp_path):
+    """Each linked worktree gets its own repo_id, isolating harness state per worktree (#28)."""
+    wt = tmp_path / "linked-wt"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt), "-b", "wt-branch"],
+        cwd=str(repo),
+        check=True,
+        capture_output=True,
+    )
+    main_root = git.repo_root(cwd=str(repo))
+    wt_root = git.repo_root(cwd=str(wt))
+    assert paths.repo_id(wt_root) != paths.repo_id(main_root)
