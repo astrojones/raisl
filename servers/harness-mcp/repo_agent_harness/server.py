@@ -14,15 +14,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, override
 
+import anyio
 import yaml
 from pydantic import Field
 
 try:
     from fastmcp import FastMCP
+    from fastmcp.server.middleware import Middleware, MiddlewareContext
 except ImportError as exc:  # pragma: no cover
     msg = "the 'fastmcp' package is required: uv add fastmcp"
     raise SystemExit(msg) from exc
@@ -45,6 +48,12 @@ from repo_agent_harness import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from fastmcp.server.middleware import CallNext
+    from fastmcp.tools import ToolResult
+    from mcp import types as mt
+
+LOG = logging.getLogger(__name__)
 
 # Single owner of the child Serena process; created without connecting (lazy).
 # The root is resolved on the first serena_* call — not here at import time — so the
@@ -129,7 +138,44 @@ the project memories it asks for) — a one-time per-repo step — before deep w
   overrides.
 """
 
+
+class ToolTimeoutMiddleware(Middleware):
+    """Bound every tool dispatch with :func:`gateway.tool_timeout` and track it in-flight.
+
+    The Serena proxy path is already bounded inside :meth:`gateway.SerenaGateway.call`; this is
+    the backstop for the generic ``@mcp.tool`` handlers (file/grep/shell) that otherwise have no
+    deadline, so a runaway handler can never starve the host heartbeat. The default
+    :func:`gateway.tool_timeout` sits clear above Serena's own dispatch reap, so for a serena_*
+    call this deadline never fires first — it stays a pure outer backstop.
+
+    Every dispatch is registered into the shared ``_serena`` in-flight registry (the single source
+    of truth, diagnostics #26): generic tools never otherwise touch the gateway, so the middleware
+    is where they become visible to :meth:`gateway.SerenaGateway.in_flight_snapshot`.
+    """
+
+    @override
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[mt.CallToolRequestParams],
+        call_next: CallNext[mt.CallToolRequestParams, ToolResult],
+    ) -> ToolResult:
+        """Bound the dispatch, register it in-flight, and log a terminal line either way."""
+        name = context.message.name
+        timeout = gateway.tool_timeout()
+        cwd = git.repo_root() or str(Path.cwd())
+        with _serena.register_inflight(name, cwd):
+            try:
+                with anyio.fail_after(timeout):
+                    result = await call_next(context)
+            except TimeoutError:
+                LOG.warning("tool %s timed out after %.1fs", name, timeout)
+                raise gateway.ToolTimeoutError(tool=name, timeout_s=timeout) from None
+            LOG.debug("tool %s completed", name)
+            return result
+
+
 mcp = FastMCP("repo-agent-harness", instructions=_INSTRUCTIONS, lifespan=_lifespan)
+mcp.add_middleware(ToolTimeoutMiddleware())
 
 for _proxied in gateway.proxied_tools(_serena):
     mcp.add_tool(_proxied)

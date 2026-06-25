@@ -31,7 +31,10 @@ import asyncio
 import json
 import os
 import sys
-from contextlib import suppress
+import threading
+import time
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -47,7 +50,7 @@ from pydantic import PrivateAttr
 from repo_agent_harness import serena_gate
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     import psutil
 
@@ -56,12 +59,19 @@ SERENA_SPEC_ENV = "REPO_AGENT_HARNESS_SERENA_SPEC"
 SERENA_CMD_ENV = "REPO_AGENT_HARNESS_SERENA_CMD"
 SERENA_TIMEOUT_ENV = "REPO_AGENT_HARNESS_SERENA_TIMEOUT"
 SERENA_CONNECT_TIMEOUT_ENV = "REPO_AGENT_HARNESS_SERENA_CONNECT_TIMEOUT"
+SERENA_CLOSE_TIMEOUT_ENV = "REPO_AGENT_HARNESS_SERENA_CLOSE_TIMEOUT"
+SERENA_DISPATCH_TIMEOUT_ENV = "REPO_AGENT_HARNESS_SERENA_DISPATCH_TIMEOUT"
 _DEFAULT_SERENA_TIMEOUT = 60.0
 # Connecting spawns Serena and boots one language server per seeded language
 # (see context.serena_languages) — a cold multi-LSP startup far slower than a steady-state
 # call, so it gets its own, more generous budget. Without bounding it the first call's connect
 # was unbounded and could hang until the agent was killed.
 _DEFAULT_SERENA_CONNECT_TIMEOUT = 120.0
+# Bounds tearing down a (possibly wedged) client in _discard_locked. The teardown runs under
+# self._lock, so an unbounded close() on a child whose teardown never returns wedges the lock
+# and every concurrent caller hangs at ``async with self._lock``. Generous enough that a healthy
+# close is never cut short; a timed-out close is abandoned (the child is reaped at next startup).
+_DEFAULT_SERENA_CLOSE_TIMEOUT = 10.0
 TOOL_PREFIX = "serena_"
 _SNAPSHOT_NAME = "serena_tools.json"
 
@@ -103,6 +113,73 @@ def serena_connect_timeout() -> float:
     because a cold multi-LSP start is slow.
     """
     return _positive_float_env(SERENA_CONNECT_TIMEOUT_ENV, _DEFAULT_SERENA_CONNECT_TIMEOUT)
+
+
+def serena_close_timeout() -> float:
+    """Return the per-teardown close timeout in seconds (env-overridable).
+
+    Bounds ``await old.close()`` in :meth:`SerenaGateway._discard_locked`, which runs under
+    the gateway lock: an unbounded close on a wedged child would hold the lock forever and
+    block every concurrent ``serena_*`` caller. A timed-out close is abandoned, not retried.
+    """
+    return _positive_float_env(SERENA_CLOSE_TIMEOUT_ENV, _DEFAULT_SERENA_CLOSE_TIMEOUT)
+
+
+def serena_dispatch_timeout() -> float:
+    """Return the whole-dispatch deadline in seconds for one :meth:`SerenaGateway.call`.
+
+    Bounds the *entire* dispatch — the connect/lock-wait plus the forwarded call — so a wedged
+    lock or stuck connect can never leave a single dispatch "still running" forever (the host
+    heartbeat never stops). Defaults to ``serena_connect_timeout() + serena_timeout()`` so a
+    legitimate cold multi-LSP boot followed by one call never trips it; env-overridable.
+    """
+    raw = os.environ.get(SERENA_DISPATCH_TIMEOUT_ENV)
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+    # Read the two sub-budgets straight from the env (not via serena_connect_timeout/
+    # serena_timeout) so the default tracks env overrides without being perturbed by tests that
+    # monkeypatch those wrapper *functions* statefully — a stray re-read would desync them.
+    connect = _positive_float_env(SERENA_CONNECT_TIMEOUT_ENV, _DEFAULT_SERENA_CONNECT_TIMEOUT)
+    call = _positive_float_env(SERENA_TIMEOUT_ENV, _DEFAULT_SERENA_TIMEOUT)
+    return connect + call
+
+
+TOOL_TIMEOUT_ENV = "REPO_AGENT_HARNESS_TOOL_TIMEOUT"
+# The generic-tool middleware backstop must never fire before Serena's own dispatch reap, or it
+# would pre-empt the carefully scoped Serena teardown (a serena_* call routes through BOTH this
+# middleware and the gateway, so its budget must sit clear above serena_dispatch_timeout()'s
+# default of connect(120) + call(60) = 180s). 240s leaves a comfortable margin while still
+# guaranteeing the host heartbeat is never starved by a wedged generic handler (file/grep/shell).
+_DEFAULT_TOOL_TIMEOUT = 240.0
+
+
+def tool_timeout() -> float:
+    """Return the generic-tool dispatch backstop timeout in seconds (env-overridable).
+
+    Bounds every ``@mcp.tool`` handler via the server middleware so a runaway generic tool
+    (file read, grep, shell) cannot block the harness indefinitely. A pure backstop: the
+    default deliberately stays clear of Serena's own per-dispatch reap so it never pre-empts it.
+    """
+    return _positive_float_env(TOOL_TIMEOUT_ENV, _DEFAULT_TOOL_TIMEOUT)
+
+
+class ToolTimeoutError(Exception):
+    """Raised when a generic tool dispatch exceeds :func:`tool_timeout`.
+
+    Carries the offending ``tool`` name and the ``timeout_s`` deadline that was exceeded so
+    callers (and structured logs) can report exactly which handler was reaped and at what budget.
+    """
+
+    def __init__(self, *, tool: str, timeout_s: float) -> None:
+        """Record the offending ``tool`` and the ``timeout_s`` deadline it exceeded."""
+        self.tool = tool
+        self.timeout_s = timeout_s
+        super().__init__(f"tool {tool!r} exceeded its {timeout_s}s dispatch timeout")
 
 
 def serena_args(root: str) -> list[str]:
@@ -212,6 +289,25 @@ def _stale_serena_procs(ours: str, root_resolved: str) -> list[psutil.Process]:
 # without letting a single slow call tear the session out from concurrent siblings.
 _WEDGE_TIMEOUTS = 3
 
+# Elapsed seconds after which an in-flight tool call is flagged ``stalled`` in the diagnostics
+# snapshot. Purely advisory (diagnostics #26): it never cancels anything — the tool_timeout()
+# middleware owns cancellation — it only surfaces "this call has been running suspiciously long".
+_INFLIGHT_STALL_SECONDS = 120.0
+
+
+def _inflight_clock() -> float:
+    """Monotonic clock for in-flight elapsed timing (patchable in tests)."""
+    return time.monotonic()
+
+
+@dataclass(frozen=True)
+class _InFlight:
+    """One tracked, currently-executing tool dispatch."""
+
+    tool: str
+    cwd: str
+    started_monotonic: float
+
 
 class SerenaGateway:
     """Lazy, crash-tolerant MCP client owning the child Serena process for one repo.
@@ -243,6 +339,14 @@ class SerenaGateway:
         self._connect_task: asyncio.Task[Client] | None = None
         self._consecutive_timeouts = 0
         self.root: str | None = root if isinstance(root, str) else None
+        # In-flight registry (diagnostics #26): the single source of truth for *every* currently
+        # executing tool dispatch — both serena_* forwards (registered in ``call``) and generic
+        # tools (registered by the server middleware). Guarded by a plain threading.Lock because
+        # the sync snapshot is read from worker threads (health checks) while async callers mutate
+        # it; the critical sections are O(1) dict ops, so the lock is never contended for long.
+        self._in_flight: dict[int, _InFlight] = {}
+        self._in_flight_lock = threading.Lock()
+        self._in_flight_seq = 0
 
     def warm(self) -> asyncio.Task[Client]:
         """Eagerly start the shared Serena session in the background.
@@ -341,7 +445,11 @@ class SerenaGateway:
         """Tear down the current client so the next call reconnects cleanly. Caller holds the lock."""
         old, self._client = self._client, None
         if old is not None:
-            with suppress(Exception):
+            # Bound the teardown: ``self._client`` is already nulled, so a close that never
+            # returns must not hold the lock forever (that wedges every concurrent caller).
+            # ``anyio.fail_after`` raises builtin ``TimeoutError`` (an ``Exception``) which the
+            # surrounding ``suppress`` swallows, abandoning a hung close after the budget.
+            with suppress(Exception), anyio.fail_after(serena_close_timeout()):
                 await old.close()
 
     async def _reap_if_current(self, client: Client) -> None:
@@ -356,6 +464,49 @@ class SerenaGateway:
             if self._client is client:
                 await self._discard_locked()
                 self._consecutive_timeouts = 0
+
+    @contextmanager
+    def register_inflight(self, tool: str, cwd: str) -> Iterator[None]:
+        """Track ``tool`` (running in ``cwd``) for the body's duration, then drop it.
+
+        The single registration point for the in-flight diagnostics registry: the server
+        middleware wraps every generic ``@mcp.tool`` dispatch with it, and :meth:`call` wraps the
+        serena_* forward. Removal happens in ``finally`` so a raising or cancelled body never
+        leaks a phantom entry.
+        """
+        with self._in_flight_lock:
+            self._in_flight_seq += 1
+            token = self._in_flight_seq
+            self._in_flight[token] = _InFlight(tool=tool, cwd=cwd, started_monotonic=_inflight_clock())
+        try:
+            yield
+        finally:
+            with self._in_flight_lock:
+                self._in_flight.pop(token, None)
+
+    def in_flight_snapshot(self) -> list[dict]:
+        """Return a sync snapshot of every currently-executing tool dispatch.
+
+        Each entry is ``{tool, cwd, elapsed_s, stalled}`` where ``elapsed_s`` is monotonic
+        wall-time since registration and ``stalled`` is ``elapsed_s > _INFLIGHT_STALL_SECONDS``.
+        Safe to call from a worker thread (health checks); takes a point-in-time copy under the
+        lock so a concurrent register/deregister cannot tear iteration.
+        """
+        now = _inflight_clock()
+        with self._in_flight_lock:
+            entries = list(self._in_flight.values())
+        out: list[dict] = []
+        for entry in entries:
+            elapsed = now - entry.started_monotonic
+            out.append(
+                {
+                    "tool": entry.tool,
+                    "cwd": entry.cwd,
+                    "elapsed_s": elapsed,
+                    "stalled": elapsed > _INFLIGHT_STALL_SECONDS,
+                }
+            )
+        return out
 
     async def call(self, name: str, arguments: dict) -> types.CallToolResult:
         """Forward one tool call to Serena over the persistent session (launched on first use).
@@ -380,6 +531,29 @@ class SerenaGateway:
 
         Raises:
             TimeoutError: If Serena does not respond within the timeout.
+        """
+        try:
+            with (
+                self.register_inflight(TOOL_PREFIX + name, self.root or ""),
+                anyio.fail_after(serena_dispatch_timeout()) as scope,
+            ):
+                return await self._dispatch(name, arguments)
+        except TimeoutError:
+            # The outer deadline fires as a cancellation *inside* :meth:`_dispatch` (caught and
+            # re-raised by its ``get_cancelled_exc_class`` handler, never reaped) and only becomes
+            # a ``TimeoutError`` here on scope exit. ``scope.cancel_called`` distinguishes a wedged
+            # connect/lock from an inner per-call timeout, which is re-raised unchanged.
+            if scope.cancel_called:
+                msg = f"serena dispatch {name!r} exceeded {serena_dispatch_timeout()}s (connect/lock wedged)"
+                raise TimeoutError(msg) from None
+            raise
+
+    async def _dispatch(self, name: str, arguments: dict) -> types.CallToolResult:
+        """Connect (lock-wait + single-flight connect) then forward one bounded call.
+
+        Runs inside the outer dispatch deadline opened by :meth:`call`; the per-call
+        :func:`serena_timeout` bounds only the forward, while the surrounding deadline bounds the
+        connect/lock-wait too. Teardown is scoped by why the call ended (see :meth:`call`).
         """
         client = await self._connected_client()
         try:

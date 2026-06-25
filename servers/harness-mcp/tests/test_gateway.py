@@ -1,7 +1,9 @@
 """Tests for the Serena gateway (gateway.py) using a fake stdio Serena — no LSP, no network."""
 
+import asyncio
 import re
 import sys
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,6 +104,158 @@ async def test_recovers_after_timeout(repo, monkeypatch):
         result = await gw.call("find_symbol", {"name_path": "again"})
         assert (result.structuredContent or {}).get("echo") == "again"
     finally:
+        await gw.aclose()
+
+
+# --------------------------------------------------------------------- tool timeout env
+
+
+def test_tool_timeout_default_exceeds_serena_dispatch(monkeypatch):
+    # The middleware backstop must never pre-empt Serena's own dispatch reap.
+    for name in (
+        gateway.TOOL_TIMEOUT_ENV,
+        gateway.SERENA_DISPATCH_TIMEOUT_ENV,
+        gateway.SERENA_CONNECT_TIMEOUT_ENV,
+        gateway.SERENA_TIMEOUT_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert gateway.tool_timeout() == gateway._DEFAULT_TOOL_TIMEOUT
+    assert gateway.tool_timeout() > gateway.serena_dispatch_timeout()
+
+
+def test_tool_timeout_env_override(monkeypatch):
+    monkeypatch.setenv(gateway.TOOL_TIMEOUT_ENV, "7.5")
+    assert gateway.tool_timeout() == pytest.approx(7.5)
+
+
+def test_tool_timeout_env_invalid_falls_back(monkeypatch):
+    monkeypatch.setenv(gateway.TOOL_TIMEOUT_ENV, "nonsense")
+    assert gateway.tool_timeout() == gateway._DEFAULT_TOOL_TIMEOUT
+
+
+def test_tool_timeout_error_carries_fields():
+    err = gateway.ToolTimeoutError(tool="repo_search_text", timeout_s=120.0)
+    assert err.tool == "repo_search_text"
+    assert err.timeout_s == pytest.approx(120.0)
+    assert "repo_search_text" in str(err)
+    assert "120" in str(err)
+
+
+# ------------------------------------------------------------------- in-flight registry
+
+
+def test_in_flight_snapshot_empty_by_default(repo):
+    gw = gateway.SerenaGateway(str(repo))
+    assert gw.in_flight_snapshot() == []
+
+
+def test_register_inflight_shows_in_snapshot_then_clears(repo):
+    gw = gateway.SerenaGateway(str(repo))
+    with gw.register_inflight("repo_read_range", "/tmp/work"):
+        snap = gw.in_flight_snapshot()
+        assert len(snap) == 1
+        entry = snap[0]
+        assert entry["tool"] == "repo_read_range"
+        assert entry["cwd"] == "/tmp/work"
+        assert entry["elapsed_s"] >= 0.0
+        assert entry["stalled"] is False
+    assert gw.in_flight_snapshot() == []
+
+
+def test_register_inflight_clears_on_exception(repo):
+    gw = gateway.SerenaGateway(str(repo))
+    err = RuntimeError("kaboom")
+    with suppress(RuntimeError), gw.register_inflight("boom", "/tmp"):
+        raise err
+    assert gw.in_flight_snapshot() == []
+
+
+def test_in_flight_stalled_flag(repo, monkeypatch):
+    gw = gateway.SerenaGateway(str(repo))
+    times = iter([100.0, 100.0 + gateway._INFLIGHT_STALL_SECONDS + 1.0])
+    monkeypatch.setattr(gateway, "_inflight_clock", lambda: next(times))
+    with gw.register_inflight("slow_tool", "/tmp"):
+        snap = gw.in_flight_snapshot()
+        assert snap[0]["stalled"] is True
+        assert snap[0]["elapsed_s"] > gateway._INFLIGHT_STALL_SECONDS
+
+
+def test_register_inflight_concurrent_entries(repo):
+    gw = gateway.SerenaGateway(str(repo))
+    with gw.register_inflight("a", "/x"), gw.register_inflight("b", "/y"):
+        tools = {e["tool"] for e in gw.in_flight_snapshot()}
+        assert tools == {"a", "b"}
+    assert gw.in_flight_snapshot() == []
+
+
+class _HangingClose:
+    """Wraps a live client but makes ``close()`` block forever and reports disconnected.
+
+    ``is_connected()`` returns False to force the next call to reconnect (and thus discard
+    this client); ``close()`` then hangs — modelling a child whose teardown never returns.
+    Used to prove a hung close does not wedge the gateway lock (FIX C).
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+
+    def is_connected(self) -> bool:
+        return False
+
+    async def close(self) -> None:
+        await anyio.sleep_forever()
+
+    async def __aenter__(self):
+        return self._inner
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+@pytest.mark.timeout(30)
+async def test_hung_close_does_not_wedge_lock(repo, monkeypatch):
+    # FIX C root cause: a child whose close() never returns must not wedge ``self._lock``.
+    # _discard_locked bounds the close with serena_close_timeout(); after the budget it is
+    # abandoned, the lock is released, and the reconnect proceeds. Without the bound the
+    # reconnect's discard awaits close() forever under the lock and the call never returns.
+    monkeypatch.setenv(gateway.SERENA_CLOSE_TIMEOUT_ENV, "0.5")
+    gw = _fake_gateway(repo)
+    try:
+        first = await gw.call("find_symbol", {"name_path": "a"})
+        assert (first.structuredContent or {}).get("echo") == "a"
+        gw._client = _HangingClose(gw._client)
+        result = await gw.call("find_symbol", {"name_path": "b"})
+        assert (result.structuredContent or {}).get("echo") == "b"
+    finally:
+        await gw.aclose()
+
+
+@pytest.mark.timeout(30)
+async def test_dispatch_bounded_when_lock_wedged(repo, monkeypatch):
+    # FIX A backstop: serena_connect_timeout only wraps __aenter__, NOT the lock acquisition,
+    # so a wedged lock leaves the connect/lock-wait outside any per-dispatch deadline. The
+    # outer fail_after(serena_dispatch_timeout()) must bound the whole call() so a wedged lock
+    # surfaces a TimeoutError instead of hanging forever at ``async with self._lock``.
+    monkeypatch.setenv(gateway.SERENA_DISPATCH_TIMEOUT_ENV, "0.5")
+    gw = _fake_gateway(repo)
+    holding = asyncio.Event()
+
+    async def _hold_lock() -> None:
+        # Wedge the lock from a *separate* task: anyio.Lock refuses same-task re-acquire with a
+        # RuntimeError, so the call must contend from a different task to block at the lock.
+        async with gw._lock:
+            holding.set()
+            await asyncio.sleep(3600)
+
+    holder = asyncio.ensure_future(_hold_lock())
+    try:
+        await holding.wait()
+        with pytest.raises(TimeoutError, match="dispatch"):
+            await gw.call("find_symbol", {"name_path": "x"})
+    finally:
+        holder.cancel()
+        with suppress(BaseException):
+            await holder
         await gw.aclose()
 
 
