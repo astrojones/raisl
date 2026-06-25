@@ -285,7 +285,7 @@ def search_text(root: str, pattern: str, paths: list[str] | None = None, limit: 
         args = ["rg", "--line-number", "--no-heading", "--color=never", "-m", str(limit + 5), pattern]
         if paths:
             args += paths
-        res = shell.run(args, cwd=root, timeout=20)
+        res = shell.run_streaming(args, cwd=root, timeout=20, max_lines=limit + 5)
         for line in res.stdout.splitlines():
             parts = line.split(":", 2)
             if len(parts) < _RG_FIELD_COUNT:
