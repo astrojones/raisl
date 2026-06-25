@@ -16,7 +16,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -31,7 +31,7 @@ except ImportError:  # keep the package importable in minimal (hook) environment
 import threading
 
 from repo_agent_harness import git, policies, shell, verify
-from repo_agent_harness.models import CheckResult, HealthCheckConfig, HealthConfig, HealthSnapshot
+from repo_agent_harness.models import CheckResult, HealthCheckConfig, HealthConfig, HealthSnapshot, InFlightCall
 
 CACHE_TTL_SECONDS = 300
 _MAX_OUTPUT = 4000
@@ -313,6 +313,20 @@ def _fresh_cache_hit(root: str, refresh: bool, only: str | None) -> HealthSnapsh
     return entry.snapshot.model_copy(update={"provenance": "cache", "stale": False})
 
 
+def _in_flight(gateway: DiagnosticsGateway | None) -> list[InFlightCall]:
+    """Surface in-flight harness tool calls so a wedged call is visible (issue #26).
+
+    Duck-typed on ``in_flight_snapshot`` (mirrors the ``call_from_thread`` guard in
+    _diagnostics_check); degrades to an empty list without a gateway or on any failure.
+    """
+    if gateway is None or not hasattr(gateway, "in_flight_snapshot"):
+        return []
+    try:
+        return [InFlightCall(**entry) for entry in gateway.in_flight_snapshot()]
+    except Exception:  # noqa: BLE001 - the registry must never crash a health snapshot
+        return []
+
+
 def _compute_snapshot(
     root: str,
     only: str | None,
@@ -330,10 +344,11 @@ def _compute_snapshot(
     snapshot = HealthSnapshot(
         ok=not any(r.ok is False for r in results),
         checks=results,
-        generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        generated_at=datetime.now(UTC).isoformat(timespec="seconds"),
         git_head=git.head(root),
         provenance="fresh",
         config_error=cfg.config_error,
+        in_flight=_in_flight(gateway),
     )
     if only is None:
         _CACHE[root] = _CacheEntry(snapshot=snapshot, status_hash=status_hash, monotonic=time.monotonic())

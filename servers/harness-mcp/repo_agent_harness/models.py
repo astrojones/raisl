@@ -107,6 +107,15 @@ class CheckResult(BaseModel):
     duration_ms: int = 0
 
 
+class InFlightCall(BaseModel):
+    """One harness tool call currently executing on the Serena gateway."""
+
+    tool: str
+    cwd: str
+    elapsed_s: float
+    stalled: bool = False
+
+
 class HealthSnapshot(BaseModel):
     """A repository health snapshot with freshness provenance."""
 
@@ -117,3 +126,6 @@ class HealthSnapshot(BaseModel):
     provenance: Literal["fresh", "cache"] = "fresh"
     stale: bool = Field(False, description="True when the worktree changed since this snapshot was generated")
     config_error: str | None = None
+    in_flight: list[InFlightCall] = Field(
+        default_factory=list, description="harness tool calls executing on the Serena gateway at snapshot time"
+    )

@@ -144,6 +144,42 @@ def test_diagnostics_skips_without_gateway(repo, isolated_harness_home):
     assert snap.ok is True
 
 
+# ------------------------------------------------------------------- in-flight surfacing
+
+
+class _FakeInFlightGateway:
+    """Stand-in gateway exposing only the in_flight_snapshot surface (issue #26)."""
+
+    def __init__(self, entries):
+        self._entries = entries
+
+    def in_flight_snapshot(self):
+        return list(self._entries)
+
+
+def test_in_flight_surfaces_stalled_call(repo, isolated_harness_home):
+    _write_config(repo, CHEAP_CONFIG, isolated_harness_home)
+    gw = _FakeInFlightGateway([{"tool": "serena_find_symbol", "cwd": str(repo), "elapsed_s": 130.0, "stalled": True}])
+    snap = health.run(str(repo), gateway=gw)
+    (call,) = snap.in_flight
+    assert call.tool == "serena_find_symbol"
+    assert call.cwd == str(repo)
+    assert call.elapsed_s == pytest.approx(130.0)
+    assert call.stalled is True
+
+
+def test_in_flight_empty_when_gateway_reports_none(repo, isolated_harness_home):
+    _write_config(repo, CHEAP_CONFIG, isolated_harness_home)
+    snap = health.run(str(repo), gateway=_FakeInFlightGateway([]))
+    assert snap.in_flight == []
+
+
+def test_in_flight_empty_without_gateway(repo, isolated_harness_home):
+    _write_config(repo, CHEAP_CONFIG, isolated_harness_home)
+    snap = health.run(str(repo))
+    assert snap.in_flight == []
+
+
 def test_verify_kinds_map_to_check_results(repo, isolated_harness_home):
     _write_config(repo, "checks:\n  - id: lint\n    kind: lint\n", isolated_harness_home)
     snap = health.run(str(repo))
