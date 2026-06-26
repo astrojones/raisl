@@ -1,14 +1,26 @@
 # Repository health — declarative checks behind `repo_health` / agent/tools/health.
 # Edit freely: this file defines what "healthy" means for THIS repo.
 # Kinds: lint | typecheck | test | git | diagnostics | ci | command
+#
+# Perception layer (auto background runs): set `auto: true` to have the perception daemon
+# re-run a check as files change (lint/typecheck are cheap & pure, so on by default; tests
+# can have side effects/cost, so opt in per repo). The background gap between runs is
+# max(min_interval_s, adaptive_factor * the check's last runtime) — a slow check throttles
+# itself. These keys are inert for on-demand `repo_health` / `repo_verify_changed`.
 version: 1
 checks:
   - id: lint # changed-file lint via the detected linter (ruff/eslint)
     kind: lint
+    auto: true # auto-run in the background (perception)
+    adaptive_factor: 8 # >= 8x its own runtime between background runs
   - id: typecheck # changed-file type check via the repo's configured type checker
     kind: typecheck
+    auto: true
+    adaptive_factor: 8
   - id: tests # tests mapped to changed files (pytest)
     kind: test
+    # auto: true   # opt in per repo to also auto-run tests in the background
+    adaptive_factor: 12
   - id: worktree # branch, dirty flag, ahead/behind upstream, merge conflicts
     kind: git
   - id: diagnostics # LSP diagnostics for changed files (requires the Serena gateway)

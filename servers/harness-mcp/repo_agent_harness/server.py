@@ -38,6 +38,7 @@ from repo_agent_harness import (
     git,
     health,
     impact,
+    perception,
     policies,
     prompts_registry,
     scaffold,
@@ -83,11 +84,22 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[dict]:
     _autoseed_onboarding(root)  # one-time, best-effort: onboard the repo before the agent acts
     # a plain task, not a task group: the lifespan generator's yield must not sit
     # inside a cancel scope, or cancelled shutdown exits scopes in the wrong task
-    repo_watcher = watcher.RepoWatcher(root, lambda paths: health.invalidate(root, paths)) if root else None
+    # One watcher, two sinks: keep the lazy health cache honest AND feed the perception daemon,
+    # which auto-runs cheap checks on change and maintains the snapshot read by repo_state + hooks.
+    perception_daemon = perception.Perception(root, gateway=_serena) if root else None
+
+    def _on_repo_change(changed: set[str]) -> None:
+        if root is not None:
+            health.invalidate(root, changed)
+        if perception_daemon is not None:
+            perception_daemon.note_change(changed)
+
+    repo_watcher = watcher.RepoWatcher(root, _on_repo_change) if root else None
     watch_task = asyncio.create_task(repo_watcher.run()) if repo_watcher else None
     # Pre-warm the Serena session in the background so the first code-navigation call
     # does not pay the full cold-boot (spawn + LSP start) cost while the UI waits.
     warm_task = _serena.warm() if root else None
+    perception_task = asyncio.create_task(perception_daemon.run()) if perception_daemon else None
     try:
         yield {}
     finally:
@@ -95,6 +107,12 @@ async def _lifespan(app: FastMCP) -> AsyncIterator[dict]:
             warm_task.cancel()
             with suppress(asyncio.CancelledError):
                 await warm_task
+        if perception_daemon is not None:
+            perception_daemon.stop()
+        if perception_task is not None:
+            perception_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await perception_task
         if repo_watcher is not None:
             repo_watcher.stop()
         if watch_task is not None:
@@ -410,6 +428,21 @@ def repo_health(
     """
     root = git.repo_root()
     return health.run(root, only=check, refresh=refresh, gateway=_serena).model_dump() if root else _no_repo()
+
+
+@mcp.tool()
+def repo_state() -> dict:
+    """Current harness *perception* of the repo: latest auto-run check verdicts + git state.
+
+    The perception daemon runs cheap checks (lint/typecheck by default; tests opt-in) in the
+    background as files change and keeps this snapshot fresh — so read it instead of calling
+    repo_verify_changed / repo_health when you just want the latest known state cheaply; the
+    checks have already run. Returns ``verdicts`` (id/kind/ok/summary/ran_at), ``git``
+    (branch/head/dirty/conflicted), and ``serena_child_pid``. Falls back to a git-only baseline
+    in the brief window before the daemon's first run.
+    """
+    root = git.repo_root()
+    return perception.current_state(root) if root else _no_repo()
 
 
 @mcp.tool()

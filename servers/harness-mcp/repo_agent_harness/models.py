@@ -65,7 +65,16 @@ CheckKind = Literal["lint", "typecheck", "test", "git", "diagnostics", "ci", "co
 
 
 class HealthCheckConfig(BaseModel):
-    """One declarative health check from agent/health.yml."""
+    """One declarative health check from agent/health.yml.
+
+    The ``auto``/``min_interval_s``/``adaptive_factor`` trio governs the perception
+    daemon (perception.py), which auto-runs ``auto=True`` checks in the background as
+    files change. The effective minimum gap between runs is
+    ``max(min_interval_s, adaptive_factor * last_runtime_s)`` so a slow check (a big
+    test suite) throttles itself proportionally to how long it actually takes, while a
+    fast check (lint) stays responsive. These fields are inert for ``repo_health`` /
+    ``repo_verify_changed``, which always run on demand.
+    """
 
     id: str
     kind: CheckKind
@@ -73,12 +82,19 @@ class HealthCheckConfig(BaseModel):
     command: list[str] | None = Field(None, description="argv list for kind=command (never a shell string)")
     timeout: int = Field(120, ge=1, le=600)
     branch: str | None = Field(None, description="branch for kind=ci; defaults to the current branch")
+    auto: bool = Field(False, description="auto-run this check in the background as files change (perception daemon)")
+    min_interval_s: float = Field(0, ge=0, description="hard floor on seconds between background auto-runs")
+    adaptive_factor: float = Field(
+        0, ge=0, description="background min interval also >= adaptive_factor * the check's last runtime"
+    )
 
 
 def _default_checks() -> list[HealthCheckConfig]:
+    # lint/typecheck are cheap and pure -> auto-run them in the background (perception);
+    # tests can have side effects and cost, so they stay opt-in (auto=False) per repo.
     return [
-        HealthCheckConfig(id="lint", kind="lint"),
-        HealthCheckConfig(id="typecheck", kind="typecheck"),
+        HealthCheckConfig(id="lint", kind="lint", auto=True, adaptive_factor=8),
+        HealthCheckConfig(id="typecheck", kind="typecheck", auto=True, adaptive_factor=8),
         HealthCheckConfig(id="tests", kind="test"),
         HealthCheckConfig(id="worktree", kind="git"),
         HealthCheckConfig(id="diagnostics", kind="diagnostics"),
@@ -92,6 +108,43 @@ class HealthConfig(BaseModel):
     version: int = 1
     checks: list[HealthCheckConfig] = Field(default_factory=_default_checks)
     config_error: str | None = Field(None, description="set when agent/health.yml failed to parse")
+
+
+# --------------------------------------------------------------------------- perception
+
+
+class CheckVerdict(BaseModel):
+    """The latest background result of one auto-run check (perception daemon)."""
+
+    id: str
+    kind: CheckKind
+    ok: bool | None = Field(None, description="True pass, False fail, None skipped/never-run")
+    summary: str = ""
+    command: str | None = None
+    ran_at: float = Field(0, description="epoch seconds when this verdict was produced")
+    runtime_ms: int = 0
+
+
+class GitState(BaseModel):
+    """A point-in-time view of the worktree's git state, for transition detection."""
+
+    branch: str = ""
+    head: str = Field("", description="short HEAD sha")
+    dirty: bool = False
+    conflicted: list[str] = Field(default_factory=list, description="files with merge conflicts")
+
+
+class PerceptionSnapshot(BaseModel):
+    """The harness's current perception of the repo, maintained by the perception daemon.
+
+    Written atomically to ``repo_state_dir(root)/perception.json`` whenever the daemon
+    refreshes it; read by the ``repo_state`` tool (pull) and the delivery hooks (push).
+    """
+
+    verdicts: list[CheckVerdict] = Field(default_factory=list)
+    git: GitState = Field(default_factory=GitState)
+    serena_child_pid: int | None = Field(None, description="live child Serena PID, if launched (topology signal)")
+    generated_at: str = Field("", description="ISO-8601 UTC timestamp of this snapshot")
 
 
 class CheckResult(BaseModel):
