@@ -3,6 +3,7 @@
 import asyncio
 import re
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,6 +104,51 @@ async def test_recovers_after_timeout(repo, monkeypatch):
             await gw.call("hang", {})
         result = await gw.call("find_symbol", {"name_path": "again"})
         assert (result.structuredContent or {}).get("echo") == "again"
+    finally:
+        await gw.aclose()
+
+
+@pytest.mark.timeout(30)
+async def test_poison_fingerprint_fails_fast_after_repeated_wedges(repo, monkeypatch):
+    """A call that wedges Serena on identical input is refused (not re-dispatched) after the limit.
+
+    Defends against the wedge -> reap -> re-dispatch-same-input -> re-wedge loop: a fresh child
+    respawned after a wedge would just re-wedge on the same deterministic input forever. After
+    ``_POISON_WEDGE_LIMIT`` consecutive wedges of one fingerprint, the gateway fails fast without
+    dispatching, so the loop cannot run indefinitely.
+    """
+    monkeypatch.setenv(gateway.SERENA_TIMEOUT_ENV, "0.5")
+    gw = _fake_gateway(repo)
+    try:
+        # 'hang' wedges every time and carries no args, so every call shares one fingerprint.
+        for _ in range(gateway._POISON_WEDGE_LIMIT):
+            with pytest.raises(TimeoutError, match="timed out"):
+                await gw.call("hang", {})
+        # The next identical call must be refused WITHOUT dispatching: fast + a poison-specific
+        # message, never the per-call "timed out" surface (which would mean it was dispatched).
+        start = time.monotonic()
+        with pytest.raises(TimeoutError, match="poison"):
+            await gw.call("hang", {})
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.2, f"poisoned call should fail fast without dispatching, took {elapsed:.3f}s"
+        # A different fingerprint is unaffected and still forwards normally.
+        result = await gw.call("find_symbol", {"name_path": "ok"})
+        assert (result.structuredContent or {}).get("echo") == "ok"
+    finally:
+        await gw.aclose()
+
+
+@pytest.mark.timeout(30)
+async def test_successful_call_clears_poison_count(repo, monkeypatch):
+    """A successful call resets its fingerprint's wedge count, so a recovered input is not poisoned."""
+    gw = _fake_gateway(repo)
+    try:
+        fp = gateway._fingerprint("find_symbol", {"name_path": "ok"})
+        # Pre-seed one wedge short of the limit; a success must clear it, not tip into poison.
+        gw._poison_wedges[fp] = gateway._POISON_WEDGE_LIMIT - 1
+        result = await gw.call("find_symbol", {"name_path": "ok"})
+        assert (result.structuredContent or {}).get("echo") == "ok"
+        assert fp not in gw._poison_wedges
     finally:
         await gw.aclose()
 

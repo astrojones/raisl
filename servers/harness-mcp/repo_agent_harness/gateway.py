@@ -412,6 +412,29 @@ def _kill_child_group(pid: int) -> None:
 # without letting a single slow call tear the session out from concurrent siblings.
 _WEDGE_TIMEOUTS = 3
 
+# Consecutive wedges of a *single* tool-call fingerprint (name + args) before the gateway stops
+# re-dispatching it. ``_WEDGE_TIMEOUTS`` reaps the shared child so siblings recover; this guards the
+# orthogonal failure where one deterministic input (a hung LSP query, issue #6157) re-wedges every
+# fresh child — reap then re-dispatch the same input would loop forever. Set one above
+# ``_WEDGE_TIMEOUTS`` so the child-level reap (which recovers the shared child for *all* callers)
+# always fires first: an input is only "poison" if it survives a reap and still re-wedges the fresh
+# child, which is exactly the deterministic-hang signature this refuses.
+_POISON_WEDGE_LIMIT = _WEDGE_TIMEOUTS + 1
+
+
+def _fingerprint(name: str, arguments: dict) -> str | None:
+    """Stable identity for a tool call (name + args), or ``None`` if the args can't be serialized.
+
+    Lets the gateway recognise the *same* call recurring so it can stop re-dispatching one that
+    deterministically wedges Serena. Fail-open by design: an unserializable argument yields ``None``,
+    which disables the poison guard for that one call rather than blocking a call we can't identify.
+    """
+    try:
+        return f"{name}:{json.dumps(arguments, sort_keys=True, default=str)}"
+    except (TypeError, ValueError):
+        return None
+
+
 # Elapsed seconds after which an in-flight tool call is flagged ``stalled`` in the diagnostics
 # snapshot. Purely advisory (diagnostics #26): it never cancels anything — the tool_timeout()
 # middleware owns cancellation — it only surfaces "this call has been running suspiciously long".
@@ -461,6 +484,10 @@ class SerenaGateway:
         # child) down — that was the parallel-subagent respawn storm.
         self._connect_task: asyncio.Task[Client] | None = None
         self._consecutive_timeouts = 0
+        # Per-fingerprint consecutive wedge counts (poison guard). A fingerprint that times out
+        # ``_POISON_WEDGE_LIMIT`` times running is refused without dispatch; any success clears it.
+        # Mutated only from the async ``call`` path (single event loop), so no lock is needed.
+        self._poison_wedges: dict[str, int] = {}
         # PID of the live child Serena process, captured out-of-band at connect (fastmcp never
         # exposes it). The out-of-band watchdog and teardown escalation kill its process group to
         # unwedge / reap a child whose stdio read ignores the cooperative timeout (issue #30).
@@ -733,14 +760,23 @@ class SerenaGateway:
         callers failing on one dead/wedged child respawns it once, not once per caller.
 
         Raises:
-            TimeoutError: If Serena does not respond within the timeout.
+            TimeoutError: If Serena does not respond within the timeout, or the call's
+                fingerprint has already been refused by the poison guard.
         """
+        fingerprint = _fingerprint(name, arguments)
+        if fingerprint is not None and self._poison_wedges.get(fingerprint, 0) >= _POISON_WEDGE_LIMIT:
+            msg = (
+                f"serena call {name!r} refused: it wedged Serena "
+                f"{self._poison_wedges[fingerprint]}x running on identical input (poison guard); "
+                f"retry suppressed to avoid a wedge loop"
+            )
+            raise TimeoutError(msg)
         try:
             with (
                 self.register_inflight(TOOL_PREFIX + name, self.root or ""),
                 anyio.fail_after(serena_dispatch_timeout()) as scope,
             ):
-                return await self._dispatch(name, arguments)
+                result = await self._dispatch(name, arguments)
         except TimeoutError:
             # The outer deadline fires as a cancellation *inside* :meth:`_dispatch` (caught and
             # re-raised by its ``get_cancelled_exc_class`` handler, never reaped) and only becomes
@@ -749,7 +785,24 @@ class SerenaGateway:
             if scope.cancel_called:
                 msg = f"serena dispatch {name!r} exceeded {serena_dispatch_timeout()}s (connect/lock wedged)"
                 raise TimeoutError(msg) from None
+            # An inner per-call/hard-kill timeout: this fingerprint wedged the child. Count it so a
+            # deterministic re-wedge trips the poison guard above instead of looping indefinitely.
+            self._note_wedge(fingerprint)
             raise
+        else:
+            self._clear_wedge(fingerprint)
+            return result
+
+    def _note_wedge(self, fingerprint: str | None) -> None:
+        """Record that ``fingerprint`` wedged the child (a per-call/hard-kill timeout)."""
+        if fingerprint is None:
+            return
+        self._poison_wedges[fingerprint] = self._poison_wedges.get(fingerprint, 0) + 1
+
+    def _clear_wedge(self, fingerprint: str | None) -> None:
+        """Forget ``fingerprint``'s wedge history after a success, so a transient hang is not poison."""
+        if fingerprint is not None:
+            self._poison_wedges.pop(fingerprint, None)
 
     async def _dispatch(self, name: str, arguments: dict) -> types.CallToolResult:
         """Connect (lock-wait + single-flight connect) then forward one bounded call.
